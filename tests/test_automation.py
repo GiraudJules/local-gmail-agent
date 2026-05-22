@@ -90,6 +90,10 @@ class AutomationHelpersTestCase(unittest.TestCase):
         mock_run.return_value = Result(1)
         self.assertFalse(is_launch_agent_loaded("default", "job123"))
 
+    @patch("local_gmail_agent.automation.sys.platform", "linux")
+    def test_is_launch_agent_loaded_returns_false_outside_macos(self) -> None:
+        self.assertFalse(is_launch_agent_loaded("default", "job123"))
+
 
 class AutomationStoreTestCase(unittest.TestCase):
     def test_save_list_find_and_remove_job(self) -> None:

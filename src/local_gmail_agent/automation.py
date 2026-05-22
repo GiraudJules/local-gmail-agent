@@ -133,8 +133,15 @@ def uninstall_launch_agent(
 
 
 def is_launch_agent_loaded(account_name: str, job_id: str) -> bool:
+    if sys.platform != "darwin":
+        return False
+
+    launchctl = shutil.which("launchctl")
+    if launchctl is None:
+        return False
+
     result = subprocess.run(
-        ["launchctl", "list", launchd_label_for_job(account_name, job_id)],
+        [launchctl, "list", launchd_label_for_job(account_name, job_id)],
         check=False,
         capture_output=True,
         text=True,

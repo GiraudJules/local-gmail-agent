@@ -39,7 +39,8 @@ class AccountsCliTestCase(unittest.TestCase):
             shown = runner.invoke(app, ["accounts", "show", "--account", "work-gmail"], env=env)
             self.assertEqual(shown.exit_code, 0, shown.output)
             self.assertIn("jules@example.com", shown.output)
-            self.assertIn("managed_labels.json", shown.output)
+            self.assertIn("Managed labels", shown.output)
+            self.assertIn("work-gmail", shown.output)
 
 
 class ClassifyHelpersTestCase(unittest.TestCase):
