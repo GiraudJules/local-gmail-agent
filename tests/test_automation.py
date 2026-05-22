@@ -79,12 +79,15 @@ class AutomationHelpersTestCase(unittest.TestCase):
             self.assertEqual(removed_path, installed_path)
             self.assertFalse(installed_path.exists())
 
+    @patch("local_gmail_agent.automation.shutil.which")
     @patch("local_gmail_agent.automation.subprocess.run")
-    def test_is_launch_agent_loaded_uses_launchctl_list(self, mock_run) -> None:
+    @patch("local_gmail_agent.automation.sys.platform", "darwin")
+    def test_is_launch_agent_loaded_uses_launchctl_list(self, mock_run, mock_which) -> None:
         class Result:
             def __init__(self, returncode: int) -> None:
                 self.returncode = returncode
 
+        mock_which.return_value = "/bin/launchctl"
         mock_run.return_value = Result(0)
         self.assertTrue(is_launch_agent_loaded("default", "job123"))
         mock_run.return_value = Result(1)
