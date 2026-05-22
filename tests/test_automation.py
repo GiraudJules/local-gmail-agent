@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import plistlib
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -166,6 +167,20 @@ class AutomationCliTestCase(unittest.TestCase):
             self.assertEqual(shown.exit_code, 0, shown.output)
             self.assertIn("01:30", shown.output)
             self.assertIn("default", shown.output)
+
+            plist_path = data_dir / "accounts" / "default" / "automation" / "jobs" / f"{job_id}.plist"
+            payload = plistlib.loads(plist_path.read_bytes())
+            self.assertTrue(Path(payload["ProgramArguments"][0]).is_absolute())
+            self.assertTrue(Path(payload["StandardOutPath"]).is_absolute())
+            self.assertTrue(Path(payload["StandardErrorPath"]).is_absolute())
+
+            runner_script = (
+                data_dir / "accounts" / "default" / "automation" / "jobs" / f"{job_id}.sh"
+            ).read_text(encoding="utf-8")
+            cli_entrypoint = Path(sys.executable).parent / "local-gmail-agent"
+            expected_command = str(cli_entrypoint if cli_entrypoint.exists() else Path(sys.executable))
+            self.assertIn(expected_command, runner_script)
+            self.assertIn("automation run --id", runner_script)
 
     @patch("local_gmail_agent.cli.install_launch_agent")
     def test_automation_enable_marks_job_enabled(self, mock_install) -> None:

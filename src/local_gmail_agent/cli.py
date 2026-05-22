@@ -4,6 +4,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+import sys
 
 import typer
 from rich.console import Console
@@ -448,21 +449,21 @@ def save_automation_job_artifacts(
     settings.automation_jobs_dir.mkdir(parents=True, exist_ok=True)
     settings.automation_logs_dir.mkdir(parents=True, exist_ok=True)
     paths = job_paths(settings.automation_dir, job.id)
+    absolute_paths = job_paths(settings.automation_dir.resolve(), job.id)
     save_automation_job(settings.automation_dir, job)
 
     project_root = Path.cwd().resolve()
+    cli_entrypoint = Path(sys.executable).parent / "local-gmail-agent"
     command = [
-        "uv",
-        "run",
-        "local-gmail-agent",
+        str(cli_entrypoint if cli_entrypoint.exists() else Path(sys.executable)),
         "automation",
         "run",
         "--id",
         job.id,
     ]
     runner_content = build_runner_script(project_root, command)
-    paths.runner_path.write_text(runner_content, encoding="utf-8")
-    paths.runner_path.chmod(0o755)
+    absolute_paths.runner_path.write_text(runner_content, encoding="utf-8")
+    absolute_paths.runner_path.chmod(0o755)
 
     start_interval_seconds: int | None = None
     start_calendar_time: tuple[int, int] | None = None
@@ -475,13 +476,13 @@ def save_automation_job_artifacts(
 
     plist_content = build_launchd_plist(
         label=launchd_label_for_job(job.account_name, job.id),
-        script_path=paths.runner_path,
-        stdout_path=paths.stdout_log_path,
-        stderr_path=paths.stderr_log_path,
+        script_path=absolute_paths.runner_path,
+        stdout_path=absolute_paths.stdout_log_path,
+        stderr_path=absolute_paths.stderr_log_path,
         start_interval_seconds=start_interval_seconds,
         start_calendar_time=start_calendar_time,
     )
-    paths.plist_path.write_text(plist_content, encoding="utf-8")
+    absolute_paths.plist_path.write_text(plist_content, encoding="utf-8")
     return paths.runner_path, paths.plist_path
 
 
