@@ -9,6 +9,14 @@ This guide covers the full local setup for Gmail OAuth and LM Studio.
 - a Gmail account you control
 - LM Studio installed locally
 
+## Platform Notes
+
+- `macOS` is the primary supported platform today
+- `Linux` should work for the core CLI, but built-in automation is not available yet
+- `Windows` is not supported yet
+
+The current automation commands rely on macOS `launchd`.
+
 ## Local Install
 
 ```bash

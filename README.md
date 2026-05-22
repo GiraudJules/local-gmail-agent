@@ -53,6 +53,17 @@ uv run pytest
 make coverage
 ```
 
+## Platform Support
+
+- `macOS`: supported for the full workflow, including built-in automation via `launchd`
+- `Linux`: core CLI should work, but built-in automation is not implemented yet
+- `Windows`: not supported yet
+
+In practice:
+
+- `auth`, `classify`, `labels`, `accounts`, and `analysis` are intended to stay portable
+- `automation enable` and the current scheduler integration are macOS-specific today
+
 ## Quick Start
 
 1. Put `credentials.json` in the project root.
