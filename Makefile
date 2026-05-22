@@ -1,6 +1,6 @@
 PYTHON ?= uv run
 
-.PHONY: sync auth auth-modify classify classify-apply labels automation test
+.PHONY: sync auth auth-modify classify classify-apply labels automation test coverage
 
 sync:
 	uv sync
@@ -25,3 +25,7 @@ automation:
 
 test:
 	$(PYTHON) pytest
+
+coverage:
+	.venv/bin/pytest --cov=local_gmail_agent --cov-report=term-missing --cov-report=html --cov-report=json:coverage.json
+	.venv/bin/python scripts/update_readme_coverage.py coverage.json README.md

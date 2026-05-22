@@ -2,6 +2,7 @@
 
 ![Status](https://img.shields.io/badge/status-WIP-orange)
 ![Tests](https://img.shields.io/badge/tests-pytest-blue)
+![Coverage](https://img.shields.io/badge/coverage-64%25-yellow)
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![Privacy](https://img.shields.io/badge/LLM-local--only-green)
 
@@ -43,6 +44,13 @@ Verify the CLI:
 
 ```bash
 uv run local-gmail-agent --help
+```
+
+Run the tests and coverage:
+
+```bash
+uv run pytest
+make coverage
 ```
 
 ## Quick Start

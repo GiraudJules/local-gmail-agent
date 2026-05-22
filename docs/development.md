@@ -17,11 +17,25 @@ Run the tests:
 uv run pytest
 ```
 
+Run coverage:
+
+```bash
+make coverage
+```
+
+This writes:
+
+- a terminal coverage summary with missing lines
+- an HTML report under `htmlcov/`
+- a JSON report at `coverage.json`
+- an updated coverage badge in `README.md`
+
 ## Useful Commands
 
 ```bash
 make sync
 make test
+make coverage
 make classify
 make labels
 ```
