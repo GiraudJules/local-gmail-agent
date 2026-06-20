@@ -58,6 +58,12 @@ uv run local-gmail-agent automation add \
 
 This creates the job and its local files, but does not enable the scheduler yet.
 
+To create a job through prompts, run `add` without a schedule:
+
+```bash
+uv run local-gmail-agent automation add
+```
+
 ## List and Inspect Jobs
 
 List all jobs:
@@ -77,6 +83,27 @@ Show one job:
 ```bash
 uv run local-gmail-agent automation show --id <uuid>
 ```
+
+## Update a Job
+
+Update saved settings and regenerate the local runner and plist files:
+
+```bash
+uv run local-gmail-agent automation update \
+  --id <uuid> \
+  --name "Morning Sweep" \
+  --daily-at 09:15 \
+  --limit 50 \
+  --dry-run
+```
+
+Or update through prompts, seeded with the current job values. If you omit `--id`, the CLI shows a numbered job list first:
+
+```bash
+uv run local-gmail-agent automation update
+```
+
+If the job is already enabled, `update` reinstalls its `launchd` agent so schedule changes take effect.
 
 ## Enable or Disable a Job
 

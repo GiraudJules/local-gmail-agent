@@ -189,6 +189,198 @@ class AutomationCliTestCase(unittest.TestCase):
             self.assertIn(expected_command, runner_script)
             self.assertIn("automation run --id", runner_script)
 
+    def test_automation_add_prompts_when_schedule_is_missing(self) -> None:
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            env = {"LGA_DATA_DIR": str(data_dir)}
+
+            result = runner.invoke(
+                app,
+                ["automation", "add"],
+                input="\n6\nPrompted Cleanup\nin:inbox newer_than:14d\n30\ny\nn\ny\nLM Studio\n90\n",
+                env=env,
+            )
+            self.assertEqual(result.exit_code, 0, result.output)
+            job_id = self._job_id_from_output(result.output)
+
+            found = find_automation_job(data_dir / "accounts", job_id)
+            assert found is not None
+            job, _ = found
+            self.assertEqual(job.name, "Prompted Cleanup")
+            self.assertEqual(job.query, "in:inbox newer_than:14d")
+            self.assertEqual(job.limit, 30)
+            self.assertTrue(job.apply)
+            self.assertFalse(job.reprocess)
+            self.assertEqual(job.schedule_type, "interval")
+            self.assertEqual(job.every_hours, 6)
+            self.assertEqual(job.wait_seconds, 90)
+
+    def test_automation_update_changes_job_and_regenerates_plist(self) -> None:
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            env = {"LGA_DATA_DIR": str(data_dir)}
+
+            add = runner.invoke(
+                app,
+                ["automation", "add", "--every-hours", "8"],
+                env=env,
+            )
+            self.assertEqual(add.exit_code, 0, add.output)
+            job_id = self._job_id_from_output(add.output)
+
+            updated = runner.invoke(
+                app,
+                [
+                    "automation",
+                    "update",
+                    "--id",
+                    job_id,
+                    "--name",
+                    "Morning Cleanup",
+                    "--query",
+                    "in:inbox newer_than:7d",
+                    "--limit",
+                    "25",
+                    "--daily-at",
+                    "09:15",
+                    "--dry-run",
+                    "--reprocess",
+                    "--no-start-lm-studio",
+                    "--wait-seconds",
+                    "60",
+                ],
+                env=env,
+            )
+            self.assertEqual(updated.exit_code, 0, updated.output)
+
+            found = find_automation_job(data_dir / "accounts", job_id)
+            assert found is not None
+            job, _ = found
+            self.assertEqual(job.name, "Morning Cleanup")
+            self.assertEqual(job.query, "in:inbox newer_than:7d")
+            self.assertEqual(job.limit, 25)
+            self.assertFalse(job.apply)
+            self.assertTrue(job.reprocess)
+            self.assertEqual(job.schedule_type, "daily")
+            self.assertIsNone(job.every_hours)
+            self.assertEqual(job.daily_at, "09:15")
+            self.assertFalse(job.start_lm_studio)
+            self.assertEqual(job.wait_seconds, 60)
+
+            plist_path = data_dir / "accounts" / "default" / "automation" / "jobs" / f"{job_id}.plist"
+            payload = plistlib.loads(plist_path.read_bytes())
+            self.assertNotIn("StartInterval", payload)
+            self.assertEqual(payload["StartCalendarInterval"], {"Hour": 9, "Minute": 15})
+
+    def test_automation_update_without_id_prompts_for_job_and_values(self) -> None:
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            env = {"LGA_DATA_DIR": str(data_dir)}
+
+            add = runner.invoke(
+                app,
+                ["automation", "add", "--every-hours", "8"],
+                env=env,
+            )
+            self.assertEqual(add.exit_code, 0, add.output)
+            job_id = self._job_id_from_output(add.output)
+
+            updated = runner.invoke(
+                app,
+                ["automation", "update"],
+                input="1\n\n6\nPrompt Selected Cleanup\nin:inbox category:primary\n40\nn\ny\nn\nLM Studio Beta\n75\n",
+                env=env,
+            )
+            self.assertEqual(updated.exit_code, 0, updated.output)
+            self.assertIn("Choose Automation Job", updated.output)
+
+            found = find_automation_job(data_dir / "accounts", job_id)
+            assert found is not None
+            job, _ = found
+            self.assertEqual(job.name, "Prompt Selected Cleanup")
+            self.assertEqual(job.query, "in:inbox category:primary")
+            self.assertEqual(job.limit, 40)
+            self.assertFalse(job.apply)
+            self.assertTrue(job.reprocess)
+            self.assertEqual(job.schedule_type, "interval")
+            self.assertEqual(job.every_hours, 6)
+            self.assertFalse(job.start_lm_studio)
+            self.assertEqual(job.lm_studio_app, "LM Studio Beta")
+            self.assertEqual(job.wait_seconds, 75)
+
+    def test_automation_update_interactive(self) -> None:
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            env = {"LGA_DATA_DIR": str(data_dir)}
+
+            add = runner.invoke(
+                app,
+                ["automation", "add", "--every-hours", "8"],
+                env=env,
+            )
+            self.assertEqual(add.exit_code, 0, add.output)
+            job_id = self._job_id_from_output(add.output)
+
+            updated = runner.invoke(
+                app,
+                ["automation", "update", "--id", job_id, "--interactive"],
+                input="\n4\nInteractive Cleanup\nin:inbox category:primary\n10\nn\ny\nn\nLM Studio Beta\n30\n",
+                env=env,
+            )
+            self.assertEqual(updated.exit_code, 0, updated.output)
+
+            found = find_automation_job(data_dir / "accounts", job_id)
+            assert found is not None
+            job, _ = found
+            self.assertEqual(job.name, "Interactive Cleanup")
+            self.assertEqual(job.query, "in:inbox category:primary")
+            self.assertEqual(job.limit, 10)
+            self.assertFalse(job.apply)
+            self.assertTrue(job.reprocess)
+            self.assertEqual(job.schedule_type, "interval")
+            self.assertEqual(job.every_hours, 4)
+            self.assertFalse(job.start_lm_studio)
+            self.assertEqual(job.lm_studio_app, "LM Studio Beta")
+            self.assertEqual(job.wait_seconds, 30)
+
+    @patch("local_gmail_agent.cli.install_launch_agent")
+    def test_automation_update_reinstalls_enabled_job(self, mock_install) -> None:
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            env = {"LGA_DATA_DIR": str(data_dir)}
+            mock_install.return_value = Path(temp_dir) / "installed.plist"
+
+            add = runner.invoke(
+                app,
+                ["automation", "add", "--every-hours", "8"],
+                env=env,
+            )
+            self.assertEqual(add.exit_code, 0, add.output)
+            job_id = self._job_id_from_output(add.output)
+
+            enabled = runner.invoke(app, ["automation", "enable", "--id", job_id], env=env)
+            self.assertEqual(enabled.exit_code, 0, enabled.output)
+            mock_install.reset_mock()
+
+            updated = runner.invoke(
+                app,
+                ["automation", "update", "--id", job_id, "--every-hours", "4"],
+                env=env,
+            )
+            self.assertEqual(updated.exit_code, 0, updated.output)
+            mock_install.assert_called_once()
+
+            found = find_automation_job(data_dir / "accounts", job_id)
+            assert found is not None
+            job, _ = found
+            self.assertTrue(job.enabled)
+            self.assertEqual(job.every_hours, 4)
+
     @patch("local_gmail_agent.cli.install_launch_agent")
     def test_automation_enable_marks_job_enabled(self, mock_install) -> None:
         runner = CliRunner()

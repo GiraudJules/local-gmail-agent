@@ -60,7 +60,10 @@ Generate automation files for periodic runs:
 
 ```bash
 uv run local-gmail-agent automation add --name "Inbox Cleanup" --every-hours 8 --limit 100 --apply
+uv run local-gmail-agent automation add
 uv run local-gmail-agent automation list
+uv run local-gmail-agent automation update
+uv run local-gmail-agent automation update --id <uuid> --daily-at 09:15 --dry-run
 ```
 
 Analyze past classifications and surface candidate Gmail rules:

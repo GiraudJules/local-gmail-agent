@@ -165,11 +165,164 @@ def resolve_job(
     return account_settings, job
 
 
+def _all_automation_jobs() -> list[AutomationJob]:
+    settings = bootstrap_settings()
+    jobs: list[AutomationJob] = []
+    for profile in list_account_profiles(settings.accounts_root):
+        account_settings = load_settings(profile.key)
+        jobs.extend(list_automation_jobs(account_settings.automation_dir))
+    return jobs
+
+
+def _prompt_automation_job_id() -> str:
+    jobs = _all_automation_jobs()
+    if not jobs:
+        raise typer.BadParameter("No automation jobs configured.")
+
+    console.print(_render_automation_job_choices_table(jobs))
+    while True:
+        choice = _prompt_int("Choose automation job", default=1, minimum=1)
+        if choice <= len(jobs):
+            return jobs[choice - 1].id
+        console.print(f"Choose a number between 1 and {len(jobs)}.")
+
+
 def _job_name_default(account_name: str, every_hours: int | None, daily_at: str | None) -> str:
     if every_hours is not None:
         return f"{account_name} every {every_hours}h"
     assert daily_at is not None
     return f"{account_name} daily {daily_at}"
+
+
+def _validate_schedule(
+    every_hours: int | None,
+    daily_at: str | None,
+) -> tuple[str, int | None, str | None]:
+    if every_hours is None and daily_at is None:
+        raise typer.BadParameter("Choose either --every-hours or --daily-at.")
+    if every_hours is not None and daily_at is not None:
+        raise typer.BadParameter("Choose either --every-hours or --daily-at, not both.")
+
+    if every_hours is not None:
+        return "interval", every_hours, None
+
+    assert daily_at is not None
+    try:
+        hour, minute = parse_daily_time(daily_at)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    return "daily", None, f"{hour:02d}:{minute:02d}"
+
+
+def _prompt_text(label: str, default: str) -> str:
+    value = typer.prompt(label, default=default)
+    return str(value).strip() or default
+
+
+def _prompt_int(label: str, default: int, minimum: int) -> int:
+    while True:
+        value = typer.prompt(label, default=str(default))
+        try:
+            parsed = int(str(value))
+        except ValueError:
+            console.print(f"{label} must be a number.")
+            continue
+        if parsed < minimum:
+            console.print(f"{label} must be at least {minimum}.")
+            continue
+        return parsed
+
+
+def _prompt_schedule(
+    current_schedule_type: str | None = None,
+    current_every_hours: int | None = None,
+    current_daily_at: str | None = None,
+) -> tuple[str, int | None, str | None]:
+    default_type = current_schedule_type or "interval"
+    while True:
+        schedule_type = _prompt_text("Schedule type (interval/daily)", default_type).lower()
+        if schedule_type in {"interval", "daily"}:
+            break
+        console.print("Schedule type must be interval or daily.")
+
+    if schedule_type == "interval":
+        every_hours = _prompt_int("Run every N hours", current_every_hours or 8, minimum=1)
+        return "interval", every_hours, None
+
+    while True:
+        daily_at = _prompt_text("Run daily at HH:MM", current_daily_at or "01:30")
+        try:
+            return _validate_schedule(None, daily_at)
+        except typer.BadParameter as exc:
+            console.print(str(exc))
+
+
+def _prompt_automation_values(
+    settings: Settings,
+    job: AutomationJob | None = None,
+    name: str | None = None,
+    query: str | None = None,
+    limit: int | None = None,
+    apply: bool | None = None,
+    reprocess: bool | None = None,
+    every_hours: int | None = None,
+    daily_at: str | None = None,
+    start_lm_studio: bool | None = None,
+    lm_studio_app: str | None = None,
+    wait_seconds: int | None = None,
+) -> dict[str, object]:
+    current_query = query or (job.query if job is not None else settings.default_query)
+    current_limit = limit if limit is not None else (job.limit if job is not None else 100)
+    current_apply = apply if apply is not None else (job.apply if job is not None else True)
+    current_reprocess = (
+        reprocess if reprocess is not None else (job.reprocess if job is not None else False)
+    )
+    current_schedule_type = job.schedule_type if job is not None else None
+    current_every_hours = (
+        every_hours if every_hours is not None else (job.every_hours if job is not None else None)
+    )
+    current_daily_at = daily_at or (job.daily_at if job is not None else None)
+    if every_hours is not None:
+        current_schedule_type = "interval"
+        current_daily_at = None
+    if daily_at is not None:
+        current_schedule_type = "daily"
+        current_every_hours = None
+    current_start_lm_studio = (
+        start_lm_studio
+        if start_lm_studio is not None
+        else (job.start_lm_studio if job is not None else True)
+    )
+    current_lm_studio_app = lm_studio_app or (
+        job.lm_studio_app if job is not None else "LM Studio"
+    )
+    current_wait_seconds = (
+        wait_seconds if wait_seconds is not None else (job.wait_seconds if job is not None else 120)
+    )
+
+    schedule_type, every_hours, daily_at = _prompt_schedule(
+        current_schedule_type=current_schedule_type,
+        current_every_hours=current_every_hours,
+        current_daily_at=current_daily_at,
+    )
+    name_default = (
+        name
+        or (job.name if job is not None else None)
+        or _job_name_default(settings.account_name, every_hours, daily_at)
+    )
+    return {
+        "name": _prompt_text("Name", name_default),
+        "query": _prompt_text("Gmail query", current_query),
+        "limit": _prompt_int("Processing limit", current_limit, minimum=1),
+        "apply": typer.confirm("Apply Gmail mutations", default=current_apply),
+        "reprocess": typer.confirm("Reprocess reviewed emails", default=current_reprocess),
+        "schedule_type": schedule_type,
+        "every_hours": every_hours,
+        "daily_at": daily_at,
+        "start_lm_studio": typer.confirm("Start LM Studio automatically", default=current_start_lm_studio),
+        "lm_studio_app": _prompt_text("LM Studio app name", current_lm_studio_app),
+        "wait_seconds": _prompt_int("LM Studio wait seconds", current_wait_seconds, minimum=5),
+    }
 
 
 def resolve_reviewed_label_id(
@@ -496,6 +649,28 @@ def _render_automation_jobs_table(jobs: list[AutomationJob]) -> Table:
     table.add_column("Enabled")
     for job in jobs:
         table.add_row(
+            job.id,
+            job.name,
+            job.account_name,
+            job.schedule_description,
+            "apply" if job.apply else "dry-run",
+            "yes" if job.enabled else "no",
+        )
+    return table
+
+
+def _render_automation_job_choices_table(jobs: list[AutomationJob]) -> Table:
+    table = Table(title="Choose Automation Job")
+    table.add_column("#", justify="right")
+    table.add_column("UUID")
+    table.add_column("Name")
+    table.add_column("Account")
+    table.add_column("Schedule")
+    table.add_column("Mode")
+    table.add_column("Enabled")
+    for index, job in enumerate(jobs, start=1):
+        table.add_row(
+            str(index),
             job.id,
             job.name,
             job.account_name,
@@ -1011,16 +1186,45 @@ def automation_add(
         min=5,
         help="How long the automation run should wait for LM Studio.",
     ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="Prompt for automation settings interactively.",
+    ),
 ) -> None:
     """Create a persisted automation job without enabling it."""
-    if every_hours is None and daily_at is None:
-        raise typer.BadParameter("Choose either --every-hours or --daily-at.")
-    if every_hours is not None and daily_at is not None:
-        raise typer.BadParameter("Choose either --every-hours or --daily-at, not both.")
-
     settings = load_settings(account)
-    effective_query = query or settings.default_query
-    schedule_type = "interval" if every_hours is not None else "daily"
+    prompt_for_values = interactive or (every_hours is None and daily_at is None)
+    if prompt_for_values:
+        prompted = _prompt_automation_values(
+            settings,
+            name=name,
+            query=query,
+            limit=limit,
+            apply=apply,
+            reprocess=reprocess,
+            every_hours=every_hours,
+            daily_at=daily_at,
+            start_lm_studio=start_lm_studio,
+            lm_studio_app=lm_studio_app,
+            wait_seconds=wait_seconds,
+        )
+        name = str(prompted["name"])
+        effective_query = str(prompted["query"])
+        limit = int(prompted["limit"])
+        apply = bool(prompted["apply"])
+        reprocess = bool(prompted["reprocess"])
+        schedule_type = str(prompted["schedule_type"])
+        every_hours = prompted["every_hours"] if isinstance(prompted["every_hours"], int) else None
+        daily_at = str(prompted["daily_at"]) if prompted["daily_at"] is not None else None
+        start_lm_studio = bool(prompted["start_lm_studio"])
+        lm_studio_app = str(prompted["lm_studio_app"])
+        wait_seconds = int(prompted["wait_seconds"])
+    else:
+        schedule_type, every_hours, daily_at = _validate_schedule(every_hours, daily_at)
+        effective_query = query or settings.default_query
+
     job = AutomationJob(
         name=name or _job_name_default(settings.account_name, every_hours, daily_at),
         account_name=settings.account_name,
@@ -1041,6 +1245,150 @@ def automation_add(
     console.print(f"Name: [bold]{job.name}[/bold]")
     console.print(f"Account: [bold]{job.account_name}[/bold]")
     console.print(f"Schedule: [bold]{job.schedule_description}[/bold]")
+    console.print(f"Runner script: [bold]{runner_path}[/bold]")
+    console.print(f"launchd plist: [bold]{plist_path}[/bold]")
+
+
+@automation_app.command("update")
+def automation_update(
+    job_id: str | None = typer.Option(None, "--id", help="Automation job UUID."),
+    name: str | None = typer.Option(None, "--name", help="Human-friendly automation name."),
+    query: str | None = typer.Option(
+        None,
+        "--query",
+        help="Gmail search query to use for automated runs.",
+    ),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Eligible emails to process per run."),
+    apply: bool | None = typer.Option(
+        None,
+        "--apply/--dry-run",
+        help="Whether the automated run should mutate Gmail.",
+    ),
+    reprocess: bool | None = typer.Option(
+        None,
+        "--reprocess/--no-reprocess",
+        help="Whether the automated run should include already reviewed emails.",
+    ),
+    every_hours: int | None = typer.Option(
+        None,
+        "--every-hours",
+        min=1,
+        help="Run the automation every N hours.",
+    ),
+    daily_at: str | None = typer.Option(
+        None,
+        "--daily-at",
+        help="Run the automation every day at HH:MM (24h format).",
+    ),
+    start_lm_studio: bool | None = typer.Option(
+        None,
+        "--start-lm-studio/--no-start-lm-studio",
+        help="Whether the automated run should try to start LM Studio first.",
+    ),
+    lm_studio_app: str | None = typer.Option(
+        None,
+        "--lm-studio-app",
+        help="macOS app name used when auto-starting LM Studio.",
+    ),
+    wait_seconds: int | None = typer.Option(
+        None,
+        "--wait-seconds",
+        min=5,
+        help="How long the automation run should wait for LM Studio.",
+    ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="Prompt for automation settings interactively.",
+    ),
+) -> None:
+    """Update one persisted automation job and regenerate its local files."""
+    if every_hours is not None and daily_at is not None:
+        raise typer.BadParameter("Choose either --every-hours or --daily-at, not both.")
+
+    if job_id is None:
+        job_id = _prompt_automation_job_id()
+
+    settings, job = resolve_job(job_id)
+    has_updates = any(
+        value is not None
+        for value in (
+            name,
+            query,
+            limit,
+            apply,
+            reprocess,
+            every_hours,
+            daily_at,
+            start_lm_studio,
+            lm_studio_app,
+            wait_seconds,
+        )
+    )
+    prompt_for_values = interactive or not has_updates
+    if prompt_for_values:
+        prompted = _prompt_automation_values(
+            settings,
+            job,
+            name=name,
+            query=query,
+            limit=limit,
+            apply=apply,
+            reprocess=reprocess,
+            every_hours=every_hours,
+            daily_at=daily_at,
+            start_lm_studio=start_lm_studio,
+            lm_studio_app=lm_studio_app,
+            wait_seconds=wait_seconds,
+        )
+        name = str(prompted["name"])
+        query = str(prompted["query"])
+        limit = int(prompted["limit"])
+        apply = bool(prompted["apply"])
+        reprocess = bool(prompted["reprocess"])
+        every_hours = prompted["every_hours"] if isinstance(prompted["every_hours"], int) else None
+        daily_at = str(prompted["daily_at"]) if prompted["daily_at"] is not None else None
+        start_lm_studio = bool(prompted["start_lm_studio"])
+        lm_studio_app = str(prompted["lm_studio_app"])
+        wait_seconds = int(prompted["wait_seconds"])
+
+    schedule_type = job.schedule_type
+    if every_hours is not None or daily_at is not None:
+        schedule_type, every_hours, daily_at = _validate_schedule(every_hours, daily_at)
+    else:
+        every_hours = job.every_hours
+        daily_at = job.daily_at
+
+    updated_job = AutomationJob(
+        version=job.version,
+        id=job.id,
+        name=name if name is not None else job.name,
+        account_name=job.account_name,
+        query=query if query is not None else job.query,
+        limit=limit if limit is not None else job.limit,
+        apply=apply if apply is not None else job.apply,
+        reprocess=reprocess if reprocess is not None else job.reprocess,
+        schedule_type=schedule_type,
+        every_hours=every_hours,
+        daily_at=daily_at,
+        start_lm_studio=(
+            start_lm_studio if start_lm_studio is not None else job.start_lm_studio
+        ),
+        lm_studio_app=lm_studio_app if lm_studio_app is not None else job.lm_studio_app,
+        wait_seconds=wait_seconds if wait_seconds is not None else job.wait_seconds,
+        enabled=job.enabled,
+        created_at=job.created_at,
+        updated_at=datetime.now(UTC),
+    )
+    runner_path, plist_path = save_automation_job_artifacts(settings, updated_job)
+    if updated_job.enabled:
+        installed_path = install_launch_agent(plist_path, updated_job.account_name, updated_job.id)
+        console.print(f"Reinstalled launchd agent: [bold]{installed_path}[/bold]")
+
+    console.print(f"Updated automation job [bold]{updated_job.id}[/bold].")
+    console.print(f"Name: [bold]{updated_job.name}[/bold]")
+    console.print(f"Schedule: [bold]{updated_job.schedule_description}[/bold]")
     console.print(f"Runner script: [bold]{runner_path}[/bold]")
     console.print(f"launchd plist: [bold]{plist_path}[/bold]")
 
