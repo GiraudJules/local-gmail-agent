@@ -45,6 +45,19 @@ Verify the CLI:
 uv run local-gmail-agent --help
 ```
 
+Install shell completion and a local command wrapper:
+
+```bash
+uv run local-gmail-agent completion install
+# or
+make completion
+```
+
+This writes a completion file for your current shell and a `local-gmail-agent`
+wrapper that calls this checkout through `uv`. It also updates your shell
+startup file so the wrapper and completion are loaded in new terminals. Restart
+your shell after install, or run `exec $SHELL -l`.
+
 Run the tests and coverage:
 
 ```bash

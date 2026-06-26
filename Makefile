@@ -1,9 +1,12 @@
 PYTHON ?= uv run
 
-.PHONY: sync auth auth-modify classify classify-apply labels automation test coverage
+.PHONY: sync completion auth auth-modify classify classify-apply labels automation test coverage
 
 sync:
 	uv sync
+
+completion:
+	$(PYTHON) local-gmail-agent completion install
 
 auth:
 	$(PYTHON) local-gmail-agent auth
