@@ -1,7 +1,7 @@
 # local-gmail-agent
 
 ![Tests](https://img.shields.io/badge/tests-pytest-blue)
-![Coverage](https://img.shields.io/badge/coverage-64%25-yellow)
+![Coverage](https://img.shields.io/badge/coverage-62%25-yellow)
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![Privacy](https://img.shields.io/badge/LLM-local--only-green)
 
