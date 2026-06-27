@@ -1417,7 +1417,12 @@ def automation_add(
 
 @automation_app.command("update")
 def automation_update(
-    job_id: str | None = typer.Option(None, "--id", help="Automation job UUID."),
+    job_id: str | None = typer.Option(
+        None,
+        "--id",
+        autocompletion=complete_automation_jobs,
+        help="Automation job UUID.",
+    ),
     name: str | None = typer.Option(None, "--name", help="Human-friendly automation name."),
     query: str | None = typer.Option(
         None,
