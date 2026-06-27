@@ -31,6 +31,27 @@ Verify the CLI:
 uv run local-gmail-agent --help
 ```
 
+Install shell completion:
+
+```bash
+uv run local-gmail-agent completion install
+# or
+make completion
+```
+
+The installer writes two files:
+
+- a shell completion file for zsh, bash, or fish
+- a `local-gmail-agent` wrapper, usually under `~/.local/bin`, that runs this checkout through `uv`
+
+It also updates your shell startup file, such as `~/.zshrc`, so the wrapper
+directory is on `PATH` and completion is loaded in new terminals. Restart the
+terminal after install, or run:
+
+```bash
+exec $SHELL -l
+```
+
 ## Google Cloud Setup
 
 1. Create a Google Cloud project.
