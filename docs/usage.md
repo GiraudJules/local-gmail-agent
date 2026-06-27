@@ -4,6 +4,18 @@ This guide covers the CLI workflow after the project is installed and authentica
 
 ## Core Commands
 
+Install shell completion and a local command wrapper:
+
+```bash
+uv run local-gmail-agent completion install
+```
+
+Show the generated completion script without writing files:
+
+```bash
+uv run local-gmail-agent completion show --shell zsh
+```
+
 Authenticate in read-only mode:
 
 ```bash
@@ -75,11 +87,42 @@ uv run local-gmail-agent analysis suggestions --min-samples 5 --majority-thresho
 
 ## Typical Workflow
 
-1. Authenticate with `uv run local-gmail-agent auth`.
-2. Run `classify --dry-run` and inspect the decisions.
-3. Upgrade to modify mode with `auth --modify`.
-4. Sync Gmail labels with `labels sync`.
-5. Re-run classification with `--apply`.
+1. Install shell completion with `uv run local-gmail-agent completion install`.
+2. Authenticate with `uv run local-gmail-agent auth`.
+3. Run `classify --dry-run` and inspect the decisions.
+4. Upgrade to modify mode with `auth --modify`.
+5. Sync Gmail labels with `labels sync`.
+6. Re-run classification with `--apply`.
+
+## Shell Completion
+
+The completion installer is repo-aware. You can run it through `uv`, even before
+`local-gmail-agent` is available on `PATH`:
+
+```bash
+uv run local-gmail-agent completion install
+```
+
+By default it detects the current shell, writes the completion file to the
+standard user-level location, installs a `local-gmail-agent` wrapper under
+`~/.local/bin`, and updates your shell startup file. The wrapper runs this
+checkout through `uv`, so you do not need a separate global package install.
+
+Use explicit paths if you prefer to manage shell files yourself:
+
+```bash
+uv run local-gmail-agent completion install \
+  --shell zsh \
+  --completion-dir ~/.zfunc \
+  --command-dir ~/.local/bin
+```
+
+Use `--no-update-shell-config` if you want the installer to write only the
+completion and wrapper files. After install, restart the shell or run:
+
+```bash
+exec $SHELL -l
+```
 
 ## Querying the Inbox
 

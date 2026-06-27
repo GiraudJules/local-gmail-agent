@@ -40,6 +40,14 @@ from local_gmail_agent.automation_store import (
     remove_automation_job,
     save_automation_job,
 )
+from local_gmail_agent.completion import (
+    SUPPORTED_SHELLS,
+    build_completion_script,
+    default_completion_dir,
+    detect_shell,
+    find_project_root,
+    install_completion,
+)
 from local_gmail_agent.config import Settings
 from local_gmail_agent.gmail_client import GmailClient
 from local_gmail_agent.label_store import (
@@ -61,10 +69,12 @@ labels_app = typer.Typer(help="Label management commands.")
 accounts_app = typer.Typer(help="Account management commands.")
 analysis_app = typer.Typer(help="Classification analysis commands.")
 automation_app = typer.Typer(help="Automation and scheduling commands.")
+completion_app = typer.Typer(help="Shell completion installation commands.")
 app.add_typer(labels_app, name="labels")
 app.add_typer(accounts_app, name="accounts")
 app.add_typer(analysis_app, name="analysis")
 app.add_typer(automation_app, name="automation")
+app.add_typer(completion_app, name="completion")
 
 console = Console()
 
@@ -97,10 +107,58 @@ class ClassificationRunResult:
     finished_at: datetime
 
 
+def _filter_completion_values(values: list[str], incomplete: str) -> list[str]:
+    return [value for value in values if value.startswith(incomplete)]
+
+
+def complete_accounts(incomplete: str) -> list[str]:
+    try:
+        settings = Settings()
+        account_keys = {DEFAULT_ACCOUNT_KEY}
+        account_keys.update(
+            profile.key for profile in list_account_profiles(settings.accounts_root)
+        )
+        return _filter_completion_values(sorted(account_keys), incomplete)
+    except Exception:
+        return []
+
+
+def complete_automation_jobs(incomplete: str) -> list[str]:
+    try:
+        settings = Settings()
+        job_ids = [
+            path.stem
+            for path in sorted(settings.accounts_root.glob("*/automation/jobs/*.json"))
+        ]
+        return _filter_completion_values(job_ids, incomplete)
+    except Exception:
+        return []
+
+
+def complete_shells(incomplete: str) -> list[str]:
+    return _filter_completion_values(["auto", *SUPPORTED_SHELLS], incomplete)
+
+
+def resolve_completion_shell(shell: str | None) -> str:
+    if shell in {None, "auto"}:
+        detected_shell = detect_shell()
+        if detected_shell is None:
+            raise typer.BadParameter(
+                "Could not detect your shell. Pass --shell zsh, --shell bash, or --shell fish."
+            )
+        return detected_shell
+
+    if shell not in SUPPORTED_SHELLS:
+        supported = ", ".join(SUPPORTED_SHELLS)
+        raise typer.BadParameter(f"Unsupported shell '{shell}'. Supported shells: {supported}.")
+    return shell
+
+
 def account_option() -> str:
     return typer.Option(
         DEFAULT_ACCOUNT_KEY,
         "--account",
+        autocompletion=complete_accounts,
         help="Account key to use. Run `accounts list` to see available accounts.",
     )
 
@@ -725,6 +783,109 @@ def _render_suggestion_table(report: SuggestionReport) -> Table:
     return table
 
 
+@completion_app.command("show")
+def show_completion(
+    shell: str | None = typer.Option(
+        None,
+        "--shell",
+        autocompletion=complete_shells,
+        help="Shell to generate completion for. Defaults to the current shell.",
+    ),
+    project_root: Path | None = typer.Option(
+        None,
+        "--project-root",
+        help="Project root used by the generated uv command. Defaults to this repository.",
+    ),
+) -> None:
+    """Print the repo-aware shell completion script."""
+    resolved_shell = resolve_completion_shell(shell)
+    resolved_project_root = project_root.resolve() if project_root else find_project_root(Path.cwd())
+    typer.echo(build_completion_script(resolved_shell, resolved_project_root), nl=False)
+
+
+@completion_app.command("install")
+def install_shell_completion(
+    shell: str | None = typer.Option(
+        None,
+        "--shell",
+        autocompletion=complete_shells,
+        help="Shell to install completion for. Defaults to the current shell.",
+    ),
+    completion_dir: Path | None = typer.Option(
+        None,
+        "--completion-dir",
+        help="Directory where the completion file should be written.",
+    ),
+    command_dir: Path | None = typer.Option(
+        None,
+        "--command-dir",
+        help="Directory where the local-gmail-agent wrapper should be written.",
+    ),
+    install_command_wrapper: bool = typer.Option(
+        True,
+        "--install-command/--no-install-command",
+        help="Install a local-gmail-agent wrapper that calls this checkout through uv.",
+    ),
+    update_shell_config: bool = typer.Option(
+        True,
+        "--update-shell-config/--no-update-shell-config",
+        help="Update the shell startup file so the wrapper and completion are loaded.",
+    ),
+    shell_config_path: Path | None = typer.Option(
+        None,
+        "--shell-config",
+        help="Shell startup file to update. Defaults to ~/.zshrc, ~/.bashrc, or fish config.",
+    ),
+    force: bool = typer.Option(
+        True,
+        "--force/--no-force",
+        help="Overwrite existing completion and wrapper files.",
+    ),
+    project_root: Path | None = typer.Option(
+        None,
+        "--project-root",
+        help="Project root used by the generated uv command. Defaults to this repository.",
+    ),
+) -> None:
+    """Install shell completion without requiring a global package install."""
+    resolved_shell = resolve_completion_shell(shell)
+    resolved_project_root = project_root.resolve() if project_root else find_project_root(Path.cwd())
+    result = install_completion(
+        shell=resolved_shell,
+        project_root=resolved_project_root,
+        completion_dir=completion_dir,
+        command_dir=command_dir,
+        install_command=install_command_wrapper,
+        update_shell_config=update_shell_config,
+        shell_config_path=shell_config_path,
+        force=force,
+    )
+
+    console.print(f"Installed {result.shell} completion: [bold]{result.completion_path}[/bold]")
+    if result.command_path is not None:
+        console.print(f"Installed command wrapper: [bold]{result.command_path}[/bold]")
+        if not result.command_dir_on_path and not result.shell_config_path:
+            console.print(
+                f"Add [bold]{result.command_path.parent}[/bold] to PATH to run "
+                "[bold]local-gmail-agent[/bold] without [bold]uv run[/bold]."
+            )
+
+    if result.shell_config_path:
+        action = "Updated" if result.shell_config_updated else "Already configured"
+        console.print(f"{action} shell startup file: [bold]{result.shell_config_path}[/bold]")
+        console.print("Restart the terminal or run `exec $SHELL -l` to load the changes.")
+    else:
+        if result.shell == "zsh":
+            completion_dir_text = str((completion_dir or default_completion_dir("zsh")).expanduser())
+            console.print("For zsh, ensure these lines are loaded from ~/.zshrc:")
+            console.print(f"fpath=({completion_dir_text} $fpath)")
+            console.print("autoload -Uz compinit && compinit")
+        elif result.shell == "bash":
+            console.print("For bash, restart the shell or source your bash completion setup.")
+        else:
+            console.print("For fish, restart the shell or run `source ~/.config/fish/config.fish`.")
+
+
 @app.command()
 def auth(
     account: str = account_option(),
@@ -1065,7 +1226,12 @@ def analysis_suggestions(
 
 @automation_app.command("run")
 def automation_run(
-    job_id: str | None = typer.Option(None, "--id", help="Automation job UUID."),
+    job_id: str | None = typer.Option(
+        None,
+        "--id",
+        autocompletion=complete_automation_jobs,
+        help="Automation job UUID.",
+    ),
     account: str = account_option(),
     query: str | None = typer.Option(
         None,
@@ -1416,7 +1582,12 @@ def automation_list(
 
 @automation_app.command("show")
 def automation_show(
-    job_id: str = typer.Option(..., "--id", help="Automation job UUID."),
+    job_id: str = typer.Option(
+        ...,
+        "--id",
+        autocompletion=complete_automation_jobs,
+        help="Automation job UUID.",
+    ),
 ) -> None:
     """Show one automation job and its runtime state."""
     settings, job = resolve_job(job_id)
@@ -1444,7 +1615,12 @@ def automation_show(
 
 @automation_app.command("enable")
 def automation_enable(
-    job_id: str = typer.Option(..., "--id", help="Automation job UUID."),
+    job_id: str = typer.Option(
+        ...,
+        "--id",
+        autocompletion=complete_automation_jobs,
+        help="Automation job UUID.",
+    ),
 ) -> None:
     """Enable one automation job by installing its launchd agent."""
     settings, job = resolve_job(job_id)
@@ -1460,7 +1636,12 @@ def automation_enable(
 
 @automation_app.command("disable")
 def automation_disable(
-    job_id: str = typer.Option(..., "--id", help="Automation job UUID."),
+    job_id: str = typer.Option(
+        ...,
+        "--id",
+        autocompletion=complete_automation_jobs,
+        help="Automation job UUID.",
+    ),
 ) -> None:
     """Disable one automation job by unloading its launchd agent."""
     settings, job = resolve_job(job_id)
@@ -1474,7 +1655,12 @@ def automation_disable(
 
 @automation_app.command("remove")
 def automation_remove(
-    job_id: str = typer.Option(..., "--id", help="Automation job UUID."),
+    job_id: str = typer.Option(
+        ...,
+        "--id",
+        autocompletion=complete_automation_jobs,
+        help="Automation job UUID.",
+    ),
 ) -> None:
     """Delete one automation job and its generated local files."""
     settings, job = resolve_job(job_id)
