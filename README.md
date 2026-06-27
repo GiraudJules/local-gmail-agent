@@ -5,9 +5,9 @@
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![Privacy](https://img.shields.io/badge/LLM-local--only-green)
 
-Local-first Gmail labeling and archiving with Gmail API plus a local LLM served by LM Studio.
+Local-first Gmail labeling and archiving with Gmail API plus a local LLM served by LM Studio or Ollama.
 
-Email content stays on your machine and is sent only to your local LM Studio server. No external LLM API is required by this project.
+Email content stays on your machine and is sent only to your configured local LLM provider. No external LLM API is required by this project.
 
 ## Status
 
@@ -79,7 +79,7 @@ In practice:
 ## Quick Start
 
 1. Put `credentials.json` in the project root.
-2. Start LM Studio and load a local model.
+2. Start LM Studio or Ollama and load a local model.
 3. Authenticate in read-only mode:
 
 ```bash
@@ -138,6 +138,16 @@ uv run local-gmail-agent analysis suggestions --account default
 - never deletes emails
 - falls back to `LLM/To Review` for invalid or low-confidence classifications
 - never archives action labels configured as protected
+
+## Local LLM Providers
+
+`local-gmail-agent` defaults to LM Studio, and also supports Ollama:
+
+```bash
+LGA_LLM_PROVIDER=ollama LGA_LLM_MODEL=qwen3:8b uv run local-gmail-agent classify --dry-run
+```
+
+Preferred provider settings use generic `LGA_LLM_*` names. Legacy `LGA_LM_STUDIO_*` settings still work for existing setups.
 
 ## Project Layout
 

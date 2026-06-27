@@ -24,7 +24,7 @@ from local_gmail_agent.analysis import SuggestionReport, build_suggestions, read
 from local_gmail_agent.automation import (
     build_launchd_plist,
     build_runner_script,
-    ensure_lm_studio_ready,
+    ensure_llm_provider_ready,
     install_launch_agent,
     installed_launch_agent_path,
     is_launch_agent_loaded,
@@ -58,13 +58,13 @@ from local_gmail_agent.label_store import (
     save_gmail_label_snapshot,
     save_label_config,
 )
-from local_gmail_agent.llm_client import LMStudioClient
+from local_gmail_agent.llm_client import build_llm_client
 from local_gmail_agent.logging import DecisionLogger, configure_logging
 from local_gmail_agent.rules import apply_safety_rules, labels_to_apply
 from local_gmail_agent.schemas import DecisionLogEntry, LLMRawDecision
 
 
-app = typer.Typer(help="Local-first Gmail labeling agent backed by LM Studio.")
+app = typer.Typer(help="Local-first Gmail labeling agent backed by a local LLM provider.")
 labels_app = typer.Typer(help="Label management commands.")
 accounts_app = typer.Typer(help="Account management commands.")
 analysis_app = typer.Typer(help="Classification analysis commands.")
@@ -352,7 +352,7 @@ def _prompt_automation_values(
         else (job.start_lm_studio if job is not None else True)
     )
     current_lm_studio_app = lm_studio_app or (
-        job.lm_studio_app if job is not None else "LM Studio"
+        job.lm_studio_app if job is not None else settings.llm_provider_app_name
     )
     current_wait_seconds = (
         wait_seconds if wait_seconds is not None else (job.wait_seconds if job is not None else 120)
@@ -377,9 +377,19 @@ def _prompt_automation_values(
         "schedule_type": schedule_type,
         "every_hours": every_hours,
         "daily_at": daily_at,
-        "start_lm_studio": typer.confirm("Start LM Studio automatically", default=current_start_lm_studio),
-        "lm_studio_app": _prompt_text("LM Studio app name", current_lm_studio_app),
-        "wait_seconds": _prompt_int("LM Studio wait seconds", current_wait_seconds, minimum=5),
+        "start_lm_studio": typer.confirm(
+            f"Start {settings.llm_provider_display_name} automatically",
+            default=current_start_lm_studio,
+        ),
+        "lm_studio_app": _prompt_text(
+            f"{settings.llm_provider_display_name} app name",
+            current_lm_studio_app,
+        ),
+        "wait_seconds": _prompt_int(
+            f"{settings.llm_provider_display_name} wait seconds",
+            current_wait_seconds,
+            minimum=5,
+        ),
     }
 
 
@@ -454,7 +464,7 @@ def run_classification(
     effective_dry_run = not apply
 
     gmail = GmailClient(settings, modify_enabled=not effective_dry_run)
-    llm = LMStudioClient(settings, label_config=label_config)
+    llm = build_llm_client(settings, label_config=label_config)
     decision_logger = DecisionLogger(settings.decision_log_path)
     reviewed_label_id = resolve_reviewed_label_id(gmail, label_config)
     messages, skipped_count = collect_messages_for_classification(
@@ -1251,19 +1261,21 @@ def automation_run(
     ),
     start_lm_studio: bool = typer.Option(
         True,
+        "--start-llm-provider/--no-start-llm-provider",
         "--start-lm-studio/--no-start-lm-studio",
-        help="Start LM Studio automatically before classification.",
+        help="Start the configured local LLM provider automatically before classification.",
     ),
-    lm_studio_app: str = typer.Option(
-        "LM Studio",
+    lm_studio_app: str | None = typer.Option(
+        None,
+        "--llm-provider-app",
         "--lm-studio-app",
-        help="macOS app name used when auto-starting LM Studio.",
+        help="macOS app name used when auto-starting the local LLM provider.",
     ),
     wait_seconds: int = typer.Option(
         120,
         "--wait-seconds",
         min=5,
-        help="How long to wait for LM Studio to be ready.",
+        help="How long to wait for the local LLM provider to be ready.",
     ),
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
 ) -> None:
@@ -1283,10 +1295,12 @@ def automation_run(
     else:
         settings = load_settings(account)
         effective_query = query or settings.default_query
+        lm_studio_app = lm_studio_app or settings.llm_provider_app_name
         report_dir = settings.automation_reports_dir
 
-    ensure_lm_studio_ready(
-        base_url=settings.lm_studio_native_base_url,
+    ensure_llm_provider_ready(
+        ready_url=settings.llm_ready_url,
+        provider_name=settings.llm_provider_display_name,
         app_name=lm_studio_app,
         timeout_seconds=wait_seconds,
         autostart=start_lm_studio,
@@ -1338,19 +1352,21 @@ def automation_add(
     ),
     start_lm_studio: bool = typer.Option(
         True,
+        "--start-llm-provider/--no-start-llm-provider",
         "--start-lm-studio/--no-start-lm-studio",
-        help="Whether the automated run should try to start LM Studio first.",
+        help="Whether the automated run should try to start the local LLM provider first.",
     ),
-    lm_studio_app: str = typer.Option(
-        "LM Studio",
+    lm_studio_app: str | None = typer.Option(
+        None,
+        "--llm-provider-app",
         "--lm-studio-app",
-        help="macOS app name used when auto-starting LM Studio.",
+        help="macOS app name used when auto-starting the local LLM provider.",
     ),
     wait_seconds: int = typer.Option(
         120,
         "--wait-seconds",
         min=5,
-        help="How long the automation run should wait for LM Studio.",
+        help="How long the automation run should wait for the local LLM provider.",
     ),
     interactive: bool = typer.Option(
         False,
@@ -1402,7 +1418,7 @@ def automation_add(
         every_hours=every_hours,
         daily_at=daily_at,
         start_lm_studio=start_lm_studio,
-        lm_studio_app=lm_studio_app,
+        lm_studio_app=lm_studio_app or settings.llm_provider_app_name,
         wait_seconds=wait_seconds,
         enabled=False,
     )
@@ -1453,19 +1469,21 @@ def automation_update(
     ),
     start_lm_studio: bool | None = typer.Option(
         None,
+        "--start-llm-provider/--no-start-llm-provider",
         "--start-lm-studio/--no-start-lm-studio",
-        help="Whether the automated run should try to start LM Studio first.",
+        help="Whether the automated run should try to start the local LLM provider first.",
     ),
     lm_studio_app: str | None = typer.Option(
         None,
+        "--llm-provider-app",
         "--lm-studio-app",
-        help="macOS app name used when auto-starting LM Studio.",
+        help="macOS app name used when auto-starting the local LLM provider.",
     ),
     wait_seconds: int | None = typer.Option(
         None,
         "--wait-seconds",
         min=5,
-        help="How long the automation run should wait for LM Studio.",
+        help="How long the automation run should wait for the local LLM provider.",
     ),
     interactive: bool = typer.Option(
         False,

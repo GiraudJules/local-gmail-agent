@@ -78,13 +78,13 @@ def build_launchd_plist(
     return plistlib.dumps(payload).decode("utf-8")
 
 
-def ensure_lm_studio_ready(
-    base_url: str,
+def ensure_llm_provider_ready(
+    ready_url: str,
+    provider_name: str,
     app_name: str,
     timeout_seconds: int,
     autostart: bool,
 ) -> None:
-    models_url = f"{base_url.rstrip('/')}/models"
     deadline = time.monotonic() + timeout_seconds
 
     if autostart and sys.platform == "darwin":
@@ -93,7 +93,7 @@ def ensure_lm_studio_ready(
     last_error: str | None = None
     while time.monotonic() < deadline:
         try:
-            response = httpx.get(models_url, timeout=5.0)
+            response = httpx.get(ready_url, timeout=5.0)
             response.raise_for_status()
             return
         except Exception as exc:  # pragma: no cover - network timing path
@@ -101,8 +101,23 @@ def ensure_lm_studio_ready(
             time.sleep(2)
 
     raise RuntimeError(
-        f"LM Studio was not ready at {models_url} within {timeout_seconds}s. "
+        f"{provider_name} was not ready at {ready_url} within {timeout_seconds}s. "
         f"Last error: {last_error or 'unknown'}"
+    )
+
+
+def ensure_lm_studio_ready(
+    base_url: str,
+    app_name: str,
+    timeout_seconds: int,
+    autostart: bool,
+) -> None:
+    ensure_llm_provider_ready(
+        ready_url=f"{base_url.rstrip('/')}/models",
+        provider_name="LM Studio",
+        app_name=app_name,
+        timeout_seconds=timeout_seconds,
+        autostart=autostart,
     )
 
 

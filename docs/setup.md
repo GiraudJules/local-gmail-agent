@@ -1,13 +1,13 @@
 # Setup Guide
 
-This guide covers the full local setup for Gmail OAuth and LM Studio.
+This guide covers the full local setup for Gmail OAuth and a local LLM provider.
 
 ## Prerequisites
 
 - Python `3.12+`
 - `uv`
 - a Gmail account you control
-- LM Studio installed locally
+- LM Studio or Ollama installed locally
 
 ## Platform Notes
 
@@ -115,7 +115,11 @@ Upgrade to modify mode later when you want label sync or live mutations:
 uv run local-gmail-agent auth --modify
 ```
 
-## LM Studio Setup
+## Local LLM Provider Setup
+
+The project defaults to LM Studio, but can also use Ollama. Choose one provider.
+
+### LM Studio
 
 1. Download a local instruct model in LM Studio.
 2. Start the LM Studio local server.
@@ -140,21 +144,63 @@ Recommended runtime settings:
 - top-p: `0.9`
 - max tokens: `512`
 
-If you enabled LM Studio API auth, set `LGA_LM_STUDIO_API_TOKEN` in `.env`.
+If you enabled LM Studio API auth, set `LGA_LLM_API_TOKEN` in `.env`.
 
-## OpenAI-Compatible Mode
+### Ollama
 
-The project defaults to the LM Studio native REST API, but can use the OpenAI-compatible endpoint if needed:
+Start Ollama and pull a local model:
 
 ```bash
-LGA_LM_STUDIO_API_MODE=openai_compat uv run local-gmail-agent classify --limit 20 --dry-run
+ollama pull qwen3:8b
+curl -s http://localhost:11434/api/tags
+```
+
+Then select Ollama:
+
+```bash
+LGA_LLM_PROVIDER=ollama
+LGA_LLM_MODEL=qwen3:8b
+```
+
+Ollama defaults:
+
+- native API base URL: `http://localhost:11434`
+- OpenAI-compatible base URL: `http://localhost:11434/v1`
+
+## LLM Configuration
+
+Preferred settings use generic names:
+
+```bash
+LGA_LLM_PROVIDER=lm_studio          # lm_studio or ollama
+LGA_LLM_API_MODE=native             # native or openai_compat
+LGA_LLM_NATIVE_BASE_URL=http://localhost:1234/api/v1
+LGA_LLM_OPENAI_BASE_URL=http://localhost:1234/v1
+LGA_LLM_MODEL=
+```
+
+Ollama uses provider-specific URLs:
+
+```bash
+LGA_OLLAMA_BASE_URL=http://localhost:11434
+LGA_OLLAMA_OPENAI_BASE_URL=http://localhost:11434/v1
+```
+
+Legacy `LGA_LM_STUDIO_*` settings are still accepted for existing setups.
+
+### OpenAI-Compatible Mode
+
+The project defaults to native provider APIs, but can use OpenAI-compatible endpoints if needed:
+
+```bash
+LGA_LLM_API_MODE=openai_compat uv run local-gmail-agent classify --limit 20 --dry-run
 ```
 
 ## First Run Checklist
 
 1. Install dependencies with `uv`.
 2. Put `credentials.json` in the repo root.
-3. Start LM Studio and load a model.
+3. Start LM Studio or Ollama and load a model.
 4. Run `uv run local-gmail-agent auth`.
 5. Run `uv run local-gmail-agent classify --limit 20 --dry-run`.
 6. If the dry run looks correct, run `uv run local-gmail-agent auth --modify`.

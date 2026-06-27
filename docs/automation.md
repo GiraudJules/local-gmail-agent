@@ -1,6 +1,6 @@
 # Automation Guide
 
-This guide covers unattended runs with LM Studio plus macOS scheduling through `launchd`.
+This guide covers unattended runs with a local LLM provider plus macOS scheduling through `launchd`.
 
 ## Job Model
 
@@ -133,7 +133,7 @@ Run one saved automation job manually:
 uv run local-gmail-agent automation run --id <uuid>
 ```
 
-This uses the job's saved account, query, limit, mode, and LM Studio startup settings.
+This uses the job's saved account, query, limit, mode, and local LLM provider startup settings.
 
 ## One-Off Run Without Saving a Job
 
@@ -143,14 +143,14 @@ You can still run automation ad hoc:
 uv run local-gmail-agent automation run --account default --limit 100 --apply
 ```
 
-## LM Studio Startup
+## Local LLM Provider Startup
 
-The job can try to start LM Studio automatically on macOS.
+The job can try to start the configured local LLM provider automatically on macOS.
 
 Defaults:
 
 - start app: yes
-- app name: `LM Studio`
+- app name: configured provider display name, such as `LM Studio` or `Ollama`
 - wait time: `120` seconds
 
 Example:
@@ -159,7 +159,7 @@ Example:
 uv run local-gmail-agent automation add \
   --name "Morning Sweep" \
   --every-hours 12 \
-  --lm-studio-app "LM Studio" \
+  --llm-provider-app "Ollama" \
   --wait-seconds 180
 ```
 

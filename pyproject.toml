@@ -1,7 +1,7 @@
 [project]
 name = "local-gmail-agent"
 version = "0.1.0"
-description = "Local-first Gmail labeling and archiving with Gmail API and LM Studio."
+description = "Local-first Gmail labeling and archiving with Gmail API and local LLM providers."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

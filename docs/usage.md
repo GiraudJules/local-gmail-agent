@@ -22,6 +22,12 @@ Authenticate in read-only mode:
 uv run local-gmail-agent auth
 ```
 
+Select Ollama instead of the default LM Studio provider:
+
+```bash
+LGA_LLM_PROVIDER=ollama LGA_LLM_MODEL=qwen3:8b uv run local-gmail-agent classify --dry-run
+```
+
 Authenticate a specific account:
 
 ```bash

@@ -70,26 +70,55 @@ def _extract_first_json_object(content: str) -> str | None:
     return content[start : end + 1]
 
 
-class LMStudioClient:
+class BaseLLMClient:
     def __init__(self, settings: Settings, label_config: ManagedLabelConfig) -> None:
         self.settings = settings
         self.label_config = label_config
-        self.openai_client = OpenAI(
-            base_url=settings.lm_studio_openai_base_url,
-            api_key=settings.llm_api_key,
-            timeout=settings.llm_timeout_seconds,
-        )
-        self.http_client = httpx.Client(
-            base_url=settings.lm_studio_native_base_url,
-            timeout=settings.llm_timeout_seconds,
-            headers=self._native_headers(),
-        )
         self._resolved_model: str | None = settings.llm_model
 
+    @property
+    def provider_name(self) -> str:
+        return self.settings.llm_provider_display_name
+
     def classify_email(self, email: EmailMessage) -> LLMRawDecision:
-        if self.settings.lm_studio_api_mode == "native":
-            return self._classify_via_native_api(email)
-        return self._classify_via_openai_compat(email)
+        raise NotImplementedError
+
+    def _system_prompt(self) -> str:
+        return (
+            "You classify Gmail emails for local labeling. "
+            "Choose exactly one label from the allowed taxonomy. "
+            "Set archive=true only when the email does not need a human reply or follow-up. "
+            "Keep the reason concise and grounded in the email content. "
+            "Return only a JSON object. Do not use markdown fences. "
+            "Do not add commentary before or after the JSON."
+        )
+
+    def _user_prompt(self, email: EmailMessage) -> str:
+        prompt_payload = ClassificationPromptPayload.from_email(
+            email,
+            allowed_labels=self.label_config.classification_labels,
+        )
+        return (
+            "Classify this email using the following typed payload. "
+            "Return a JSON object with the output_fields exactly as specified.\n\n"
+            f"{prompt_payload.model_dump_json(indent=2)}"
+        )
+
+    def _openai_messages(self, email: EmailMessage) -> list[dict[str, str]]:
+        return [
+            {
+                "role": "system",
+                "content": self._system_prompt(),
+            },
+            {
+                "role": "user",
+                "content": self._user_prompt(email),
+            },
+        ]
+
+
+class OpenAICompatibleMixin(BaseLLMClient):
+    openai_client: OpenAI
 
     def _classify_via_openai_compat(self, email: EmailMessage) -> LLMRawDecision:
         response = self._create_openai_completion(email, use_schema=True)
@@ -103,25 +132,6 @@ class LMStudioClient:
             payload = parse_json_response(self._extract_openai_content(response))
 
         return LLMRawDecision.model_validate(payload)
-
-    def _classify_via_native_api(self, email: EmailMessage) -> LLMRawDecision:
-        response = self.http_client.post(
-            "/chat",
-            json={
-                "model": self._resolve_model(),
-                "input": self._user_prompt(email),
-                "system_prompt": self._system_prompt(),
-                "temperature": self.settings.llm_temperature,
-                "top_p": self.settings.llm_top_p,
-                "max_output_tokens": self.settings.llm_max_tokens,
-                "context_length": self.settings.llm_context_length,
-                "store": False,
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
-        content = self._extract_native_content(payload)
-        return LLMRawDecision.model_validate(parse_json_response(content))
 
     def _create_openai_completion(self, email: EmailMessage, use_schema: bool) -> Any:
         params: dict[str, Any] = {
@@ -151,17 +161,91 @@ class LMStudioClient:
         except Exception as exc:
             if use_schema:
                 LOGGER.warning(
-                    "LM Studio rejected json_schema output: %s. Falling back to text mode.",
+                    "%s rejected json_schema output: %s. Falling back to text mode.",
+                    self.provider_name,
                     exc,
                 )
                 return self._create_openai_completion(email, use_schema=False)
             raise
 
+    def _extract_openai_content(self, response: Any) -> str:
+        message = response.choices[0].message
+        content = message.content
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+                elif hasattr(item, "text"):
+                    parts.append(getattr(item, "text"))
+            joined = "".join(parts).strip()
+            if joined:
+                return joined
+
+        raise RuntimeError(f"{self.provider_name} returned an empty response.")
+
     def _resolve_model(self) -> str:
         if self._resolved_model:
             return self._resolved_model
 
-        if self.settings.lm_studio_api_mode == "native":
+        models = self.openai_client.models.list().data
+        if not models:
+            raise RuntimeError(
+                f"No model is available in {self.provider_name}. "
+                "Start the local server and load or pull a model first."
+            )
+        self._resolved_model = models[0].id
+
+        LOGGER.info("Using %s model: %s", self.provider_name, self._resolved_model)
+        return self._resolved_model
+
+
+class LMStudioClient(OpenAICompatibleMixin):
+    def __init__(self, settings: Settings, label_config: ManagedLabelConfig) -> None:
+        super().__init__(settings, label_config)
+        self.openai_client = OpenAI(
+            base_url=settings.llm_openai_base_url,
+            api_key=settings.llm_api_key,
+            timeout=settings.llm_timeout_seconds,
+        )
+        self.http_client = httpx.Client(
+            base_url=settings.llm_native_base_url,
+            timeout=settings.llm_timeout_seconds,
+            headers=self._native_headers(),
+        )
+
+    def classify_email(self, email: EmailMessage) -> LLMRawDecision:
+        if self.settings.llm_api_mode == "native":
+            return self._classify_via_native_api(email)
+        return self._classify_via_openai_compat(email)
+
+    def _classify_via_native_api(self, email: EmailMessage) -> LLMRawDecision:
+        response = self.http_client.post(
+            "/chat",
+            json={
+                "model": self._resolve_model(),
+                "input": self._user_prompt(email),
+                "system_prompt": self._system_prompt(),
+                "temperature": self.settings.llm_temperature,
+                "top_p": self.settings.llm_top_p,
+                "max_output_tokens": self.settings.llm_max_tokens,
+                "context_length": self.settings.llm_context_length,
+                "store": False,
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        content = self._extract_native_content(payload)
+        return LLMRawDecision.model_validate(parse_json_response(content))
+
+    def _resolve_model(self) -> str:
+        if self._resolved_model:
+            return self._resolved_model
+
+        if self.settings.llm_api_mode == "native":
             response = self.http_client.get("/models")
             response.raise_for_status()
             models = response.json().get("models", [])
@@ -182,37 +266,6 @@ class LMStudioClient:
         LOGGER.info("Using LM Studio model: %s", self._resolved_model)
         return self._resolved_model
 
-    def _openai_messages(self, email: EmailMessage) -> list[dict[str, str]]:
-        return [
-            {
-                "role": "system",
-                "content": self._system_prompt(),
-            },
-            {
-                "role": "user",
-                "content": self._user_prompt(email),
-            },
-        ]
-
-    def _extract_openai_content(self, response: Any) -> str:
-        message = response.choices[0].message
-        content = message.content
-        if isinstance(content, str):
-            return content
-
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    parts.append(item.get("text", ""))
-                elif hasattr(item, "text"):
-                    parts.append(getattr(item, "text"))
-            joined = "".join(parts).strip()
-            if joined:
-                return joined
-
-        raise RuntimeError("LM Studio returned an empty response.")
-
     def _extract_native_content(self, response_payload: dict[str, Any]) -> str:
         output = response_payload.get("output", [])
         messages = [
@@ -225,29 +278,94 @@ class LMStudioClient:
             raise RuntimeError("LM Studio native API returned no message content.")
         return content
 
-    def _system_prompt(self) -> str:
-        return (
-            "You classify Gmail emails for local labeling. "
-            "Choose exactly one label from the allowed taxonomy. "
-            "Set archive=true only when the email does not need a human reply or follow-up. "
-            "Keep the reason concise and grounded in the email content. "
-            "Return only a JSON object. Do not use markdown fences. "
-            "Do not add commentary before or after the JSON."
-        )
-
-    def _user_prompt(self, email: EmailMessage) -> str:
-        prompt_payload = ClassificationPromptPayload.from_email(
-            email,
-            allowed_labels=self.label_config.classification_labels,
-        )
-        return (
-            "Classify this email using the following typed payload. "
-            "Return a JSON object with the output_fields exactly as specified.\n\n"
-            f"{prompt_payload.model_dump_json(indent=2)}"
-        )
-
     def _native_headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if self.settings.lm_studio_api_token:
-            headers["Authorization"] = f"Bearer {self.settings.lm_studio_api_token}"
+        if self.settings.llm_api_token:
+            headers["Authorization"] = f"Bearer {self.settings.llm_api_token}"
         return headers
+
+
+class OllamaClient(OpenAICompatibleMixin):
+    def __init__(self, settings: Settings, label_config: ManagedLabelConfig) -> None:
+        super().__init__(settings, label_config)
+        self.http_client = httpx.Client(
+            base_url=settings.ollama_base_url,
+            timeout=settings.llm_timeout_seconds,
+        )
+        self.openai_client = OpenAI(
+            base_url=settings.ollama_openai_base_url,
+            api_key=settings.llm_api_key or "ollama",
+            timeout=settings.llm_timeout_seconds,
+        )
+
+    def classify_email(self, email: EmailMessage) -> LLMRawDecision:
+        if self.settings.llm_api_mode == "openai_compat":
+            return self._classify_via_openai_compat(email)
+        return self._classify_via_native_api(email)
+
+    def _classify_via_native_api(self, email: EmailMessage) -> LLMRawDecision:
+        response = self._create_chat_completion(email, use_schema=True)
+        content = self._extract_chat_content(response.json())
+        try:
+            payload = parse_json_response(content)
+        except ValueError:
+            LOGGER.warning("Ollama structured response was not valid JSON. Retrying in JSON mode.")
+            response = self._create_chat_completion(email, use_schema=False)
+            payload = parse_json_response(self._extract_chat_content(response.json()))
+        return LLMRawDecision.model_validate(payload)
+
+    def _create_chat_completion(self, email: EmailMessage, use_schema: bool) -> httpx.Response:
+        options: dict[str, Any] = {
+            "temperature": self.settings.llm_temperature,
+            "top_p": self.settings.llm_top_p,
+            "num_ctx": self.settings.llm_context_length,
+            "num_predict": self.settings.llm_max_tokens,
+        }
+        if self.settings.llm_seed is not None:
+            options["seed"] = self.settings.llm_seed
+
+        response = self.http_client.post(
+            "/api/chat",
+            json={
+                "model": self._resolve_model(),
+                "messages": self._openai_messages(email),
+                "stream": False,
+                "format": (
+                    classification_json_schema(self.label_config.classification_labels)
+                    if use_schema
+                    else "json"
+                ),
+                "options": options,
+            },
+        )
+        response.raise_for_status()
+        return response
+
+    def _resolve_model(self) -> str:
+        if self._resolved_model:
+            return self._resolved_model
+
+        response = self.http_client.get("/api/tags")
+        response.raise_for_status()
+        models = response.json().get("models", [])
+        if not models:
+            raise RuntimeError(
+                "No model is available in Ollama. Start Ollama and run `ollama pull <model>` first."
+            )
+        self._resolved_model = models[0]["name"]
+
+        LOGGER.info("Using Ollama model: %s", self._resolved_model)
+        return self._resolved_model
+
+    def _extract_chat_content(self, response_payload: dict[str, Any]) -> str:
+        message = response_payload.get("message", {})
+        content = message.get("content", "")
+        if isinstance(content, str) and content.strip():
+            return content
+        raise RuntimeError("Ollama returned an empty response.")
+
+
+def build_llm_client(settings: Settings, label_config: ManagedLabelConfig) -> BaseLLMClient:
+    if settings.llm_provider == "ollama":
+        return OllamaClient(settings, label_config)
+    return LMStudioClient(settings, label_config)
