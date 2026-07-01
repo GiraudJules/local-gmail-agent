@@ -4,7 +4,10 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+import select
 import sys
+import termios
+import tty
 
 import typer
 from rich.console import Console
@@ -105,6 +108,12 @@ class ClassificationRunResult:
     decision_log_path: Path
     started_at: datetime
     finished_at: datetime
+
+
+@dataclass
+class InteractiveAction:
+    label: str
+    value: str
 
 
 def _filter_completion_values(values: list[str], incomplete: str) -> list[str]:
@@ -739,6 +748,416 @@ def _render_automation_job_choices_table(jobs: list[AutomationJob]) -> Table:
     return table
 
 
+def _render_interactive_automation_jobs_table(
+    jobs: list[AutomationJob],
+    selected_index: int,
+) -> Table:
+    table = Table(title="Automation Jobs")
+    table.add_column("", width=2)
+    table.add_column("Name")
+    table.add_column("Account")
+    table.add_column("Schedule")
+    table.add_column("Mode")
+    table.add_column("Enabled")
+    table.add_column("UUID")
+    for index, job in enumerate(jobs):
+        selected = index == selected_index
+        style = "bold reverse" if selected else None
+        table.add_row(
+            ">" if selected else "",
+            job.name,
+            job.account_name,
+            job.schedule_description,
+            "apply" if job.apply else "dry-run",
+            "yes" if job.enabled else "no",
+            job.id[:12],
+            style=style,
+        )
+    return table
+
+
+def _render_automation_job_summary(job: AutomationJob) -> Panel:
+    lines = [
+        f"UUID: {job.id}",
+        f"Name: {job.name}",
+        f"Account: {job.account_name}",
+        f"Query: {job.query}",
+        f"Limit: {job.limit}",
+        f"Mode: {'apply' if job.apply else 'dry-run'}",
+        f"Reprocess: {job.reprocess}",
+        f"Schedule: {job.schedule_description}",
+        f"Enabled: {job.enabled}",
+    ]
+    return Panel("\n".join(lines), title="Selected Job", expand=True)
+
+
+def _read_interactive_key() -> str:
+    fd = sys.stdin.fileno()
+    original_settings = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        key = sys.stdin.read(1)
+        if key == "\x1b":
+            while select.select([sys.stdin], [], [], 0.01)[0]:
+                key += sys.stdin.read(1)
+        return key
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, original_settings)
+
+
+def _wait_for_interactive_key() -> None:
+    if console.is_terminal and sys.stdin.isatty():
+        console.print("\nPress any key to return.")
+        _read_interactive_key()
+    else:
+        typer.prompt("Press Enter to return", default="", show_default=False)
+
+
+def _automation_jobs_for_account(account: str | None) -> list[AutomationJob]:
+    jobs: list[AutomationJob] = []
+    if account is not None:
+        settings = load_settings(account)
+        return list_automation_jobs(settings.automation_dir)
+
+    settings = bootstrap_settings()
+    for profile in list_account_profiles(settings.accounts_root):
+        account_settings = load_settings(profile.key)
+        jobs.extend(list_automation_jobs(account_settings.automation_dir))
+    return jobs
+
+
+def _show_automation_job(job_id: str) -> None:
+    settings, job = resolve_job(job_id)
+    paths = job_paths(settings.automation_dir, job.id)
+    installed_path = installed_launch_agent_path(job.account_name, job.id)
+    table = Table(title=f"Automation job {job.id}")
+    table.add_column("Setting")
+    table.add_column("Value", overflow="fold")
+    table.add_row("Name", job.name)
+    table.add_row("Account", job.account_name)
+    table.add_row("Query", job.query)
+    table.add_row("Limit", str(job.limit))
+    table.add_row("Mode", "apply" if job.apply else "dry-run")
+    table.add_row("Reprocess", str(job.reprocess))
+    table.add_row("Schedule", job.schedule_description)
+    table.add_row("Enabled", str(job.enabled))
+    table.add_row("Loaded in launchd", str(is_launch_agent_loaded(job.account_name, job.id)))
+    table.add_row("JSON path", str(paths.json_path))
+    table.add_row("Runner path", str(paths.runner_path))
+    table.add_row("Plist path", str(paths.plist_path))
+    table.add_row("Installed plist", str(installed_path))
+    table.add_row("Latest report", str(paths.latest_report_path))
+    console.print(table)
+
+
+def _run_saved_automation_job(job_id: str, verbose: bool = False) -> None:
+    configure_logging(verbose)
+    settings, job = resolve_job(job_id)
+    report_dir = job_paths(settings.automation_dir, job.id).reports_dir
+
+    ensure_lm_studio_ready(
+        base_url=settings.lm_studio_native_base_url,
+        app_name=job.lm_studio_app,
+        timeout_seconds=job.wait_seconds,
+        autostart=job.start_lm_studio,
+    )
+
+    result = run_classification(
+        settings=settings,
+        query=job.query,
+        limit=job.limit,
+        apply=job.apply,
+        reprocess=job.reprocess,
+    )
+    render_classification_result(result)
+    report_path, latest_path = write_automation_report(report_dir, result)
+    console.print(f"Automation report: [bold]{report_path}[/bold]")
+    console.print(f"Latest report: [bold]{latest_path}[/bold]")
+
+
+def _update_automation_job(
+    job_id: str,
+    name: str | None = None,
+    query: str | None = None,
+    limit: int | None = None,
+    apply: bool | None = None,
+    reprocess: bool | None = None,
+    every_hours: int | None = None,
+    daily_at: str | None = None,
+    start_lm_studio: bool | None = None,
+    lm_studio_app: str | None = None,
+    wait_seconds: int | None = None,
+    interactive: bool = False,
+) -> AutomationJob:
+    if every_hours is not None and daily_at is not None:
+        raise typer.BadParameter("Choose either --every-hours or --daily-at, not both.")
+
+    settings, job = resolve_job(job_id)
+    has_updates = any(
+        value is not None
+        for value in (
+            name,
+            query,
+            limit,
+            apply,
+            reprocess,
+            every_hours,
+            daily_at,
+            start_lm_studio,
+            lm_studio_app,
+            wait_seconds,
+        )
+    )
+    prompt_for_values = interactive or not has_updates
+    if prompt_for_values:
+        prompted = _prompt_automation_values(
+            settings,
+            job,
+            name=name,
+            query=query,
+            limit=limit,
+            apply=apply,
+            reprocess=reprocess,
+            every_hours=every_hours,
+            daily_at=daily_at,
+            start_lm_studio=start_lm_studio,
+            lm_studio_app=lm_studio_app,
+            wait_seconds=wait_seconds,
+        )
+        name = str(prompted["name"])
+        query = str(prompted["query"])
+        limit = int(prompted["limit"])
+        apply = bool(prompted["apply"])
+        reprocess = bool(prompted["reprocess"])
+        every_hours = prompted["every_hours"] if isinstance(prompted["every_hours"], int) else None
+        daily_at = str(prompted["daily_at"]) if prompted["daily_at"] is not None else None
+        start_lm_studio = bool(prompted["start_lm_studio"])
+        lm_studio_app = str(prompted["lm_studio_app"])
+        wait_seconds = int(prompted["wait_seconds"])
+
+    schedule_type = job.schedule_type
+    if every_hours is not None or daily_at is not None:
+        schedule_type, every_hours, daily_at = _validate_schedule(every_hours, daily_at)
+    else:
+        every_hours = job.every_hours
+        daily_at = job.daily_at
+
+    updated_job = AutomationJob(
+        version=job.version,
+        id=job.id,
+        name=name if name is not None else job.name,
+        account_name=job.account_name,
+        query=query if query is not None else job.query,
+        limit=limit if limit is not None else job.limit,
+        apply=apply if apply is not None else job.apply,
+        reprocess=reprocess if reprocess is not None else job.reprocess,
+        schedule_type=schedule_type,
+        every_hours=every_hours,
+        daily_at=daily_at,
+        start_lm_studio=(
+            start_lm_studio if start_lm_studio is not None else job.start_lm_studio
+        ),
+        lm_studio_app=lm_studio_app if lm_studio_app is not None else job.lm_studio_app,
+        wait_seconds=wait_seconds if wait_seconds is not None else job.wait_seconds,
+        enabled=job.enabled,
+        created_at=job.created_at,
+        updated_at=datetime.now(UTC),
+    )
+    runner_path, plist_path = save_automation_job_artifacts(settings, updated_job)
+    if updated_job.enabled:
+        installed_path = install_launch_agent(plist_path, updated_job.account_name, updated_job.id)
+        console.print(f"Reinstalled launchd agent: [bold]{installed_path}[/bold]")
+
+    console.print(f"Updated automation job [bold]{updated_job.id}[/bold].")
+    console.print(f"Name: [bold]{updated_job.name}[/bold]")
+    console.print(f"Schedule: [bold]{updated_job.schedule_description}[/bold]")
+    console.print(f"Runner script: [bold]{runner_path}[/bold]")
+    console.print(f"launchd plist: [bold]{plist_path}[/bold]")
+    return updated_job
+
+
+def _enable_automation_job(job_id: str) -> None:
+    settings, job = resolve_job(job_id)
+    runner_path, plist_path = save_automation_job_artifacts(settings, job)
+    installed_path = install_launch_agent(plist_path, job.account_name, job.id)
+    job.enabled = True
+    job.updated_at = datetime.now(UTC)
+    save_automation_job(settings.automation_dir, job)
+    console.print(f"Enabled automation job [bold]{job.id}[/bold].")
+    console.print(f"Installed launchd agent: [bold]{installed_path}[/bold]")
+    console.print(f"Runner script: [bold]{runner_path}[/bold]")
+
+
+def _disable_automation_job(job_id: str) -> None:
+    settings, job = resolve_job(job_id)
+    removed_path = uninstall_launch_agent(job.account_name, job.id)
+    job.enabled = False
+    job.updated_at = datetime.now(UTC)
+    save_automation_job(settings.automation_dir, job)
+    console.print(f"Disabled automation job [bold]{job.id}[/bold].")
+    console.print(f"Removed installed plist: [bold]{removed_path}[/bold]")
+
+
+def _remove_automation_job(job_id: str) -> None:
+    settings, job = resolve_job(job_id)
+    uninstall_launch_agent(job.account_name, job.id)
+    paths = remove_automation_job(settings.automation_dir, job.id)
+    console.print(f"Removed automation job [bold]{job.id}[/bold].")
+    console.print(f"Deleted job file: [bold]{paths.json_path}[/bold]")
+
+
+def _automation_job_actions(job: AutomationJob) -> list[InteractiveAction]:
+    toggle_label = "Disable schedule" if job.enabled else "Enable schedule"
+    return [
+        InteractiveAction("Show details", "show"),
+        InteractiveAction("Run now", "run"),
+        InteractiveAction("Update settings", "update"),
+        InteractiveAction(toggle_label, "toggle"),
+        InteractiveAction("Remove job", "remove"),
+        InteractiveAction("Back to jobs", "back"),
+        InteractiveAction("Quit", "quit"),
+    ]
+
+
+def _prompt_interactive_action(job: AutomationJob) -> str:
+    actions = _automation_job_actions(job)
+    console.print(_render_automation_job_summary(job))
+    for index, action in enumerate(actions, start=1):
+        console.print(f"{index}. {action.label}")
+
+    while True:
+        choice = _prompt_int("Choose action", default=1, minimum=1)
+        if choice <= len(actions):
+            return actions[choice - 1].value
+        console.print(f"Choose a number between 1 and {len(actions)}.")
+
+
+def _read_interactive_action(job: AutomationJob) -> str:
+    actions = _automation_job_actions(job)
+    selected_index = 0
+    while True:
+        console.clear()
+        console.print(_render_automation_job_summary(job))
+        table = Table(title="Actions")
+        table.add_column("", width=2)
+        table.add_column("Action")
+        for index, action in enumerate(actions):
+            selected = index == selected_index
+            table.add_row(
+                ">" if selected else "",
+                action.label,
+                style="bold reverse" if selected else None,
+            )
+        console.print(table)
+        console.print("Use up/down or j/k, Enter to select, q to quit.")
+
+        key = _read_interactive_key()
+        if key in {"\x1b[A", "k"}:
+            selected_index = (selected_index - 1) % len(actions)
+        elif key in {"\x1b[B", "j"}:
+            selected_index = (selected_index + 1) % len(actions)
+        elif key in {"\r", "\n"}:
+            return actions[selected_index].value
+        elif key in {"q", "Q", "\x03"}:
+            return "quit"
+
+
+def _handle_interactive_automation_action(job: AutomationJob, action: str) -> bool:
+    if action == "show":
+        _show_automation_job(job.id)
+        _wait_for_interactive_key()
+        return True
+
+    if action == "run":
+        if typer.confirm(f"Run automation job '{job.name}' now?", default=False):
+            _run_saved_automation_job(job.id)
+            _wait_for_interactive_key()
+        return True
+
+    if action == "update":
+        _update_automation_job(job.id, interactive=True)
+        _wait_for_interactive_key()
+        return True
+
+    if action == "toggle":
+        if job.enabled:
+            _disable_automation_job(job.id)
+        else:
+            _enable_automation_job(job.id)
+        _wait_for_interactive_key()
+        return True
+
+    if action == "remove":
+        if typer.confirm(f"Remove automation job '{job.name}'?", default=False):
+            _remove_automation_job(job.id)
+            _wait_for_interactive_key()
+        return True
+
+    return action != "quit"
+
+
+def _prompt_automation_jobs_browser(account: str | None) -> None:
+    selected_index = 0
+    while True:
+        jobs = _automation_jobs_for_account(account)
+        if not jobs:
+            console.print("No automation jobs configured.")
+            return
+
+        console.print(_render_automation_job_choices_table(jobs))
+        choice = _prompt_int("Choose automation job (0 to quit)", default=1, minimum=0)
+        if choice == 0:
+            return
+        if choice > len(jobs):
+            console.print(f"Choose a number between 0 and {len(jobs)}.")
+            continue
+
+        selected_index = choice - 1
+        while True:
+            jobs = _automation_jobs_for_account(account)
+            if selected_index >= len(jobs):
+                selected_index = max(0, len(jobs) - 1)
+            if not jobs:
+                console.print("No automation jobs configured.")
+                return
+
+            action = _prompt_interactive_action(jobs[selected_index])
+            if action == "back":
+                break
+            if not _handle_interactive_automation_action(jobs[selected_index], action):
+                return
+
+
+def _run_automation_jobs_browser(account: str | None) -> None:
+    selected_index = 0
+    while True:
+        jobs = _automation_jobs_for_account(account)
+        if not jobs:
+            console.print("No automation jobs configured.")
+            return
+        if selected_index >= len(jobs):
+            selected_index = len(jobs) - 1
+
+        console.clear()
+        console.print(_render_interactive_automation_jobs_table(jobs, selected_index))
+        console.print(_render_automation_job_summary(jobs[selected_index]))
+        console.print("Use up/down or j/k, Enter for actions, q to quit.")
+
+        key = _read_interactive_key()
+        if key in {"\x1b[A", "k"}:
+            selected_index = (selected_index - 1) % len(jobs)
+        elif key in {"\x1b[B", "j"}:
+            selected_index = (selected_index + 1) % len(jobs)
+        elif key in {"\r", "\n"}:
+            action = _read_interactive_action(jobs[selected_index])
+            if action == "back":
+                continue
+            if not _handle_interactive_automation_action(jobs[selected_index], action):
+                return
+        elif key in {"q", "Q", "\x03"}:
+            return
+
+
 def _render_account_table(profiles: list[AccountProfile], active_account: str | None = None) -> Table:
     table = Table(title="Accounts")
     table.add_column("Key")
@@ -1268,22 +1687,14 @@ def automation_run(
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
 ) -> None:
     """Run one unattended automation cycle and write a report."""
-    configure_logging(verbose)
-
     if job_id is not None:
-        settings, job = resolve_job(job_id)
-        effective_query = job.query
-        limit = job.limit
-        apply = job.apply
-        reprocess = job.reprocess
-        start_lm_studio = job.start_lm_studio
-        lm_studio_app = job.lm_studio_app
-        wait_seconds = job.wait_seconds
-        report_dir = job_paths(settings.automation_dir, job.id).reports_dir
-    else:
-        settings = load_settings(account)
-        effective_query = query or settings.default_query
-        report_dir = settings.automation_reports_dir
+        _run_saved_automation_job(job_id, verbose=verbose)
+        return
+
+    configure_logging(verbose)
+    settings = load_settings(account)
+    effective_query = query or settings.default_query
+    report_dir = settings.automation_reports_dir
 
     ensure_lm_studio_ready(
         base_url=settings.lm_studio_native_base_url,
@@ -1481,107 +1892,49 @@ def automation_update(
     if job_id is None:
         job_id = _prompt_automation_job_id()
 
-    settings, job = resolve_job(job_id)
-    has_updates = any(
-        value is not None
-        for value in (
-            name,
-            query,
-            limit,
-            apply,
-            reprocess,
-            every_hours,
-            daily_at,
-            start_lm_studio,
-            lm_studio_app,
-            wait_seconds,
-        )
-    )
-    prompt_for_values = interactive or not has_updates
-    if prompt_for_values:
-        prompted = _prompt_automation_values(
-            settings,
-            job,
-            name=name,
-            query=query,
-            limit=limit,
-            apply=apply,
-            reprocess=reprocess,
-            every_hours=every_hours,
-            daily_at=daily_at,
-            start_lm_studio=start_lm_studio,
-            lm_studio_app=lm_studio_app,
-            wait_seconds=wait_seconds,
-        )
-        name = str(prompted["name"])
-        query = str(prompted["query"])
-        limit = int(prompted["limit"])
-        apply = bool(prompted["apply"])
-        reprocess = bool(prompted["reprocess"])
-        every_hours = prompted["every_hours"] if isinstance(prompted["every_hours"], int) else None
-        daily_at = str(prompted["daily_at"]) if prompted["daily_at"] is not None else None
-        start_lm_studio = bool(prompted["start_lm_studio"])
-        lm_studio_app = str(prompted["lm_studio_app"])
-        wait_seconds = int(prompted["wait_seconds"])
-
-    schedule_type = job.schedule_type
-    if every_hours is not None or daily_at is not None:
-        schedule_type, every_hours, daily_at = _validate_schedule(every_hours, daily_at)
-    else:
-        every_hours = job.every_hours
-        daily_at = job.daily_at
-
-    updated_job = AutomationJob(
-        version=job.version,
-        id=job.id,
-        name=name if name is not None else job.name,
-        account_name=job.account_name,
-        query=query if query is not None else job.query,
-        limit=limit if limit is not None else job.limit,
-        apply=apply if apply is not None else job.apply,
-        reprocess=reprocess if reprocess is not None else job.reprocess,
-        schedule_type=schedule_type,
+    _update_automation_job(
+        job_id=job_id,
+        name=name,
+        query=query,
+        limit=limit,
+        apply=apply,
+        reprocess=reprocess,
         every_hours=every_hours,
         daily_at=daily_at,
-        start_lm_studio=(
-            start_lm_studio if start_lm_studio is not None else job.start_lm_studio
-        ),
-        lm_studio_app=lm_studio_app if lm_studio_app is not None else job.lm_studio_app,
-        wait_seconds=wait_seconds if wait_seconds is not None else job.wait_seconds,
-        enabled=job.enabled,
-        created_at=job.created_at,
-        updated_at=datetime.now(UTC),
+        start_lm_studio=start_lm_studio,
+        lm_studio_app=lm_studio_app,
+        wait_seconds=wait_seconds,
+        interactive=interactive,
     )
-    runner_path, plist_path = save_automation_job_artifacts(settings, updated_job)
-    if updated_job.enabled:
-        installed_path = install_launch_agent(plist_path, updated_job.account_name, updated_job.id)
-        console.print(f"Reinstalled launchd agent: [bold]{installed_path}[/bold]")
-
-    console.print(f"Updated automation job [bold]{updated_job.id}[/bold].")
-    console.print(f"Name: [bold]{updated_job.name}[/bold]")
-    console.print(f"Schedule: [bold]{updated_job.schedule_description}[/bold]")
-    console.print(f"Runner script: [bold]{runner_path}[/bold]")
-    console.print(f"launchd plist: [bold]{plist_path}[/bold]")
 
 
 @automation_app.command("list")
 def automation_list(
     account: str | None = optional_account_option(),
+    interactive: bool | None = typer.Option(
+        None,
+        "--interactive/--no-interactive",
+        help="Browse jobs interactively. Defaults to interactive only on a real terminal.",
+    ),
 ) -> None:
-    """List persisted automation jobs."""
-    jobs: list[AutomationJob] = []
-    if account is not None:
-        settings = load_settings(account)
-        jobs = list_automation_jobs(settings.automation_dir)
-    else:
-        settings = bootstrap_settings()
-        for profile in list_account_profiles(settings.accounts_root):
-            account_settings = load_settings(profile.key)
-            jobs.extend(list_automation_jobs(account_settings.automation_dir))
+    """List persisted automation jobs, with an interactive browser on terminals."""
+    jobs = _automation_jobs_for_account(account)
 
     if not jobs:
         console.print("No automation jobs configured.")
         return
+
+    should_browse = interactive
+    if should_browse is None:
+        should_browse = console.is_terminal and sys.stdin.isatty()
+
+    if should_browse:
+        if console.is_terminal and sys.stdin.isatty():
+            _run_automation_jobs_browser(account)
+        else:
+            _prompt_automation_jobs_browser(account)
+        return
+
     console.print(_render_automation_jobs_table(jobs))
 
 
@@ -1595,27 +1948,7 @@ def automation_show(
     ),
 ) -> None:
     """Show one automation job and its runtime state."""
-    settings, job = resolve_job(job_id)
-    paths = job_paths(settings.automation_dir, job.id)
-    installed_path = installed_launch_agent_path(job.account_name, job.id)
-    table = Table(title=f"Automation job {job.id}")
-    table.add_column("Setting")
-    table.add_column("Value", overflow="fold")
-    table.add_row("Name", job.name)
-    table.add_row("Account", job.account_name)
-    table.add_row("Query", job.query)
-    table.add_row("Limit", str(job.limit))
-    table.add_row("Mode", "apply" if job.apply else "dry-run")
-    table.add_row("Reprocess", str(job.reprocess))
-    table.add_row("Schedule", job.schedule_description)
-    table.add_row("Enabled", str(job.enabled))
-    table.add_row("Loaded in launchd", str(is_launch_agent_loaded(job.account_name, job.id)))
-    table.add_row("JSON path", str(paths.json_path))
-    table.add_row("Runner path", str(paths.runner_path))
-    table.add_row("Plist path", str(paths.plist_path))
-    table.add_row("Installed plist", str(installed_path))
-    table.add_row("Latest report", str(paths.latest_report_path))
-    console.print(table)
+    _show_automation_job(job_id)
 
 
 @automation_app.command("enable")
@@ -1628,15 +1961,7 @@ def automation_enable(
     ),
 ) -> None:
     """Enable one automation job by installing its launchd agent."""
-    settings, job = resolve_job(job_id)
-    runner_path, plist_path = save_automation_job_artifacts(settings, job)
-    installed_path = install_launch_agent(plist_path, job.account_name, job.id)
-    job.enabled = True
-    job.updated_at = datetime.now(UTC)
-    save_automation_job(settings.automation_dir, job)
-    console.print(f"Enabled automation job [bold]{job.id}[/bold].")
-    console.print(f"Installed launchd agent: [bold]{installed_path}[/bold]")
-    console.print(f"Runner script: [bold]{runner_path}[/bold]")
+    _enable_automation_job(job_id)
 
 
 @automation_app.command("disable")
@@ -1649,13 +1974,7 @@ def automation_disable(
     ),
 ) -> None:
     """Disable one automation job by unloading its launchd agent."""
-    settings, job = resolve_job(job_id)
-    removed_path = uninstall_launch_agent(job.account_name, job.id)
-    job.enabled = False
-    job.updated_at = datetime.now(UTC)
-    save_automation_job(settings.automation_dir, job)
-    console.print(f"Disabled automation job [bold]{job.id}[/bold].")
-    console.print(f"Removed installed plist: [bold]{removed_path}[/bold]")
+    _disable_automation_job(job_id)
 
 
 @automation_app.command("remove")
@@ -1668,11 +1987,7 @@ def automation_remove(
     ),
 ) -> None:
     """Delete one automation job and its generated local files."""
-    settings, job = resolve_job(job_id)
-    uninstall_launch_agent(job.account_name, job.id)
-    paths = remove_automation_job(settings.automation_dir, job.id)
-    console.print(f"Removed automation job [bold]{job.id}[/bold].")
-    console.print(f"Deleted job file: [bold]{paths.json_path}[/bold]")
+    _remove_automation_job(job_id)
 
 
 @app.command()
