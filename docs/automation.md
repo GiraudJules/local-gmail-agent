@@ -72,6 +72,8 @@ List all jobs:
 uv run local-gmail-agent automation list
 ```
 
+On an interactive terminal, `automation list` opens a job browser. Use the arrow keys or `j`/`k` to move between jobs, press Enter to open actions, and choose whether to show details, run now, update, enable or disable, remove, or go back. Use `--no-interactive` to force plain table output, or `--interactive` to force the prompt-based browser when running under a non-TTY.
+
 List one account only:
 
 ```bash

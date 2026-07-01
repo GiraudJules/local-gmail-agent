@@ -112,10 +112,13 @@ To create an automation job:
 ```bash
 uv run local-gmail-agent automation add --name "Nightly Cleanup" --daily-at 01:30 --limit 100 --apply
 uv run local-gmail-agent automation add
+uv run local-gmail-agent automation list
 uv run local-gmail-agent automation update
 uv run local-gmail-agent automation update --id <uuid> --daily-at 09:15 --dry-run
 uv run local-gmail-agent automation enable --id <uuid>
 ```
+
+On a real terminal, `automation list` opens an interactive job browser with actions for each job.
 
 To inspect repeated classification patterns and surface candidate rules:
 

@@ -78,6 +78,8 @@ uv run local-gmail-agent automation update
 uv run local-gmail-agent automation update --id <uuid> --daily-at 09:15 --dry-run
 ```
 
+`automation list` opens an interactive job browser on a real terminal. Pass `--no-interactive` when you want script-friendly table output.
+
 Analyze past classifications and surface candidate Gmail rules:
 
 ```bash

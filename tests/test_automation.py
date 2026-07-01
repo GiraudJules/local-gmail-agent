@@ -189,6 +189,32 @@ class AutomationCliTestCase(unittest.TestCase):
             self.assertIn(expected_command, runner_script)
             self.assertIn("automation run --id", runner_script)
 
+    def test_automation_list_interactive_prompt_can_show_and_quit(self) -> None:
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            env = {"LGA_DATA_DIR": str(data_dir)}
+
+            add = runner.invoke(
+                app,
+                ["automation", "add", "--name", "Nightly Cleanup", "--every-hours", "8"],
+                env=env,
+            )
+            self.assertEqual(add.exit_code, 0, add.output)
+            job_id = self._job_id_from_output(add.output)
+
+            result = runner.invoke(
+                app,
+                ["automation", "list", "--interactive"],
+                input="1\n1\n\n6\n0\n",
+                env=env,
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn("Choose Automation Job", result.output)
+            self.assertIn(f"Automation job {job_id}", result.output)
+            self.assertIn("Show details", result.output)
+
     def test_automation_add_prompts_when_schedule_is_missing(self) -> None:
         runner = CliRunner()
         with tempfile.TemporaryDirectory() as temp_dir:
