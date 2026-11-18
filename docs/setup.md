@@ -117,7 +117,7 @@ uv run local-gmail-agent auth --modify
 
 ## LM Studio Setup
 
-1. Download a local instruct model in LM Studio.
+1. Download `lfm3-1.7b` in LM Studio (LiquidAI LFM3 1.7B, GGUF `Q8_0`).
 2. Start the LM Studio local server.
 3. Confirm the API responds:
 
@@ -125,11 +125,19 @@ uv run local-gmail-agent auth --modify
 curl -s http://localhost:1234/api/v1/models
 ```
 
-Recommended starting points on Apple Silicon:
+The default model identifier is `lfm3-1.7b`. Confirm that the `/models`
+response includes that exact `key`. The native chat API can load the downloaded
+model automatically on the first request when the installed runtime supports it
+([LM Studio native API quickstart](https://lmstudio.ai/docs/developer/rest/quickstart)).
 
-- `Qwen3-14B-Instruct`
-- `Qwen3-8B-Instruct`
-- `Llama 3.1 8B Instruct`
+For an existing install, update the model line in `.env`:
+
+```dotenv
+LGA_LLM_MODEL=lfm3-1.7b
+```
+
+`.env` overrides the application default. The previous local Gemma setting was
+`LGA_LLM_MODEL=google/gemma-4-e4b`; see the [model history](../README.md#model-configuration-and-history).
 
 Recommended runtime settings:
 
@@ -138,9 +146,49 @@ Recommended runtime settings:
 - context length: `8192`
 - temperature: `0.1`
 - top-p: `0.9`
-- max tokens: `512`
+- max output tokens: `2048` (`LGA_LLM_MAX_TOKENS=2048`)
+- native API reasoning for LFM3: `on` (`LGA_LM_STUDIO_REASONING=on`)
+
+LFM3 enables reasoning by default in LM Studio. In the application smoke test,
+the previous 512-token budget ran out before the final classification JSON.
+Disabling reasoning also produced unfinished or invalid JSON in this setup.
+The LFM3 configuration therefore keeps reasoning enabled and allows 2048 output
+tokens for reasoning plus the final answer. The native API supports an explicit
+[reasoning setting](https://lmstudio.ai/docs/developer/rest/chat).
+The application default `auto` omits the override and uses LM Studio's default;
+the example `.env` explicitly selects `on` for LFM3. This setting applies to
+native API mode only.
+
+These are the project's starting settings, not a benchmark of classification
+quality. Review a dry run with the new model before changing automation behavior.
 
 If you enabled LM Studio API auth, set `LGA_LM_STUDIO_API_TOKEN` in `.env`.
+
+### LFM3 MLX Runtime Compatibility
+
+The project uses the GGUF model `lfm3-1.7b`. The attempted MLX alternative,
+LiquidAI `LFM3-1.7B-MLX-8bit` (`lfm3-1.7b-mlx`), failed to load with MLX
+runtimes `1.13.1` and `1.14.0`:
+
+```text
+Model type lfm3 not supported. Error: No module named 'mlx_vlm.speculative.drafters.lfm3'
+```
+
+Runtime `1.14.0` bundles `mlx-vlm 0.7.10.post1`; the model maintainer reports
+that LFM3 text support requires `mlx-vlm 0.7.11` or later in
+[the upstream issue](https://github.com/lmstudio-ai/mlx-engine/issues/380).
+
+Model discovery alone therefore does not verify inference compatibility.
+If you want to try the MLX variant later, check for a compatible official runtime
+and test a load before changing the shared model setting:
+
+```bash
+lms runtime update mlx --dry-run
+lms load lfm3-1.7b-mlx --context-length 8192 --yes
+```
+
+If loading fails with this error, keep `LGA_LLM_MODEL=lfm3-1.7b` in `.env` to
+continue using the GGUF model. Verify inference before switching to MLX.
 
 ## OpenAI-Compatible Mode
 
@@ -154,7 +202,7 @@ LGA_LM_STUDIO_API_MODE=openai_compat uv run local-gmail-agent classify --limit 2
 
 1. Install dependencies with `uv`.
 2. Put `credentials.json` in the repo root.
-3. Start LM Studio and load a model.
+3. Start the LM Studio server with `lfm3-1.7b` downloaded.
 4. Run `uv run local-gmail-agent auth`.
 5. Run `uv run local-gmail-agent classify --limit 20 --dry-run`.
 6. If the dry run looks correct, run `uv run local-gmail-agent auth --modify`.

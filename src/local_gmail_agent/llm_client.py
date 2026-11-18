@@ -58,8 +58,9 @@ def _strip_code_fences(content: str) -> str:
 
 
 def _strip_thinking_blocks(content: str) -> str:
-    without_think = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE)
-    return without_think.strip()
+    # Some models omit the opening tag but still close their reasoning before
+    # emitting the final answer. Only parse the answer after that boundary.
+    return re.split(r"</think>", content, flags=re.IGNORECASE)[-1].strip()
 
 
 def _extract_first_json_object(content: str) -> str | None:
@@ -105,18 +106,22 @@ class LMStudioClient:
         return LLMRawDecision.model_validate(payload)
 
     def _classify_via_native_api(self, email: EmailMessage) -> LLMRawDecision:
+        params: dict[str, Any] = {
+            "model": self._resolve_model(),
+            "input": self._user_prompt(email),
+            "system_prompt": self._system_prompt(),
+            "temperature": self.settings.llm_temperature,
+            "top_p": self.settings.llm_top_p,
+            "max_output_tokens": self.settings.llm_max_tokens,
+            "context_length": self.settings.llm_context_length,
+            "store": False,
+        }
+        if self.settings.lm_studio_reasoning != "auto":
+            params["reasoning"] = self.settings.lm_studio_reasoning
+
         response = self.http_client.post(
             "/chat",
-            json={
-                "model": self._resolve_model(),
-                "input": self._user_prompt(email),
-                "system_prompt": self._system_prompt(),
-                "temperature": self.settings.llm_temperature,
-                "top_p": self.settings.llm_top_p,
-                "max_output_tokens": self.settings.llm_max_tokens,
-                "context_length": self.settings.llm_context_length,
-                "store": False,
-            },
+            json=params,
         )
         response.raise_for_status()
         payload = response.json()

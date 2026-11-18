@@ -163,6 +163,43 @@ uv run local-gmail-agent automation add \
   --wait-seconds 180
 ```
 
+## Update the Model for Existing Jobs
+
+All jobs use the shared model configuration from `.env` in the checkout where
+their runner script changes directory. To switch existing jobs from Gemma to
+LFM3, download the GGUF model `lfm3-1.7b` in LM Studio, start the local server,
+and verify that it loads with your installed runtime. Then update:
+
+```dotenv
+LGA_LLM_MODEL=lfm3-1.7b
+LGA_LM_STUDIO_REASONING=on
+LGA_LLM_MAX_TOKENS=2048
+```
+
+Confirm the model key is present in `http://localhost:1234/api/v1/models`.
+The native API loads it on the first classification request if needed. Keep the
+server enabled in LM Studio so jobs that start the app can reach the API.
+
+The runner reads `.env` on every invocation; no job recreation or `launchd`
+reload is needed for a model change. Schedules, queries, limits, and apply modes
+remain as saved. Inspect them with:
+
+```bash
+uv run local-gmail-agent automation list
+uv run local-gmail-agent automation show --id <uuid>
+```
+
+For a manual preview, use the job's account, query, and limit with `classify`:
+
+```bash
+uv run local-gmail-agent classify --account <account> --query '<saved-query>' --limit 20 --dry-run
+```
+
+`automation run --id <uuid>` uses the job's saved apply mode, so it may modify
+Gmail. Use `classify --dry-run` when you only want to inspect the new model's
+decisions. The previous Gemma setting is documented in the
+[model history](../README.md#model-configuration-and-history).
+
 ## Reports
 
 Every run writes:
