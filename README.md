@@ -79,7 +79,7 @@ In practice:
 ## Quick Start
 
 1. Put `credentials.json` in the project root.
-2. Start LM Studio and load a local model.
+2. Start the LM Studio local server with `lfm3-1.7b` downloaded (GGUF).
 3. Authenticate in read-only mode:
 
 ```bash
@@ -130,6 +130,29 @@ uv run local-gmail-agent analysis suggestions --account default
 - [Label Management](docs/labels.md)
 - [Automation Guide](docs/automation.md)
 - [Development Notes](docs/development.md)
+
+## Model Configuration and History
+
+The default model is now `lfm3-1.7b` (LiquidAI LFM3 1.7B, GGUF `Q8_0`),
+served locally by LM Studio through its native API.
+Set `LGA_LLM_MODEL=lfm3-1.7b` in an existing `.env` as well;
+set `LGA_LLM_MAX_TOKENS=2048` and `LGA_LM_STUDIO_REASONING=on` so the model
+can finish its reasoning and final JSON. Updating the checkout does not
+overwrite local settings. See the
+[setup guide](docs/setup.md#lm-studio-setup) for verification and runtime settings.
+
+The GGUF model replaces the attempted `lfm3-1.7b-mlx` configuration, which
+failed to load with MLX runtimes `1.13.1` and `1.14.0`. The
+[compatibility history](docs/setup.md#lfm3-mlx-runtime-compatibility) records that issue.
+
+The previous model configuration used Gemma 4 E4B (`google/gemma-4-e4b`, GGUF
+`Q4_K_M`). It is retained here as configuration history and can still be selected
+by setting `LGA_LLM_MODEL=google/gemma-4-e4b` in `.env`. Earlier setup examples
+used `qwen3-14b-instruct`.
+
+Existing automation jobs read `.env` from this checkout at each run, so changing
+the model there updates their next scheduled run. See
+[updating existing automations](docs/automation.md#update-the-model-for-existing-jobs).
 
 ## Safety
 

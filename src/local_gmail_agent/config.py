@@ -34,12 +34,13 @@ class Settings(BaseSettings):
     lm_studio_native_base_url: str = "http://localhost:1234/api/v1"
     lm_studio_openai_base_url: str = "http://localhost:1234/v1"
     lm_studio_api_token: str | None = None
+    lm_studio_reasoning: Literal["auto", "off", "low", "medium", "high", "on"] = "auto"
     llm_api_key: str = "lm-studio"
-    llm_model: str | None = None
+    llm_model: str | None = "lfm3-1.7b"
     llm_context_length: int = 8192
     llm_temperature: float = 0.1
     llm_top_p: float = 0.9
-    llm_max_tokens: int = 512
+    llm_max_tokens: int = 2048
     llm_seed: int | None = 42
     llm_timeout_seconds: float = 120.0
 
